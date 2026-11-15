@@ -1,0 +1,875 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wieseke Vorlagen-Engine</title>
+<link rel="icon" href="/static/logo.png">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/modern.css">
+</head>
+<body>
+<div id="toast"></div>
+
+<section id="loginView" class="center-screen">
+  <div class="card login-card">
+    <img src="/static/logo.png" class="logo dynamic-logo" alt="Anwendungslogo">
+    <h1 class="dynamic-app-name">Wieseke Vorlagen-Engine</h1>
+    <p class="muted">Projekt- und Vorlagenplattform · Version 3.4</p>
+    <div id="loginError" class="warning" hidden></div>
+    <form id="loginForm" method="post" action="/login">
+      <input type="hidden" id="loginNext" name="next" value="/">
+      <label>Benutzername<input id="loginUsername" name="username" autocomplete="username" value="admin" required></label>
+      <label>Passwort<input id="loginPassword" name="password" type="password" autocomplete="current-password" value="Admin12345!" required></label>
+      <button type="submit" class="primary">Anmelden</button>
+    </form>
+    <button class="link-btn" onclick="showRecovery()">Passwort mit Wiederherstellungscode zurücksetzen</button>
+  </div>
+</section>
+
+<section id="appView" hidden>
+<aside id="appSidebar" class="app-sidebar" aria-label="Anwendungsnavigation">
+  <div class="sidebar-brand-row">
+    <button class="brand brand-home" type="button" onclick="goHome()" title="Zur Hauptseite"><img src="/static/logo.png" class="dynamic-logo" alt="Anwendungslogo"><strong class="dynamic-app-name">Wieseke Vorlagen-Engine</strong></button>
+    <button id="sidebarCloseButton" class="sidebar-close icon-button" type="button" aria-label="Navigation schließen">×</button>
+  </div>
+<nav id="moduleNav" class="module-nav" aria-label="Hauptnavigation">
+  <button data-nav-key="dashboard" data-tab="dashboard" data-permission="email_create" class="active">Hauptseite</button>
+  <button data-nav-key="email" data-module="email" data-any-permission="email_create,templates_manage,categories_manage">E-Mail-Vorlagen</button>
+  <button data-nav-key="documents" data-module="documents" data-any-permission="documents_create,document_templates_manage">Dokumente</button>
+  <button data-nav-key="bidder" data-module="bidder" data-any-permission="bid_questions_view,bid_questions_manage,bid_answers_manage">Bieterfragen</button>
+  <button data-nav-key="projects" data-module="projects" data-any-permission="projects_view,projects_manage">Projekte</button>
+  <button data-nav-key="users" data-module="users" data-any-permission="users_manage,roles_manage">Benutzerverwaltung</button>
+  <button data-nav-key="system" data-module="system" data-permission="system_view">System</button>
+  <button data-nav-key="help" data-tab="help">Hilfe</button>
+</nav>
+  <div class="sidebar-footer">
+    <button class="sidebar-footer-action settings-tool" data-tab="settings" data-any-permission="settings_manage,backup_manage,templates_export_all" onclick="switchTab('settings')" data-shell-icon="settings">Einstellungen</button>
+    <button class="sidebar-footer-action account-tool" data-tab="account" onclick="switchTab('account')" data-shell-icon="account">Mein Konto</button>
+    <div class="sidebar-account">
+      <span class="account-avatar" aria-hidden="true">AW</span>
+      <span id="who"></span>
+      <button class="logout-button icon-button" onclick="logout()" title="Abmelden" aria-label="Abmelden">↪</button>
+    </div>
+  </div>
+</aside>
+
+<div id="sidebarBackdrop" class="sidebar-backdrop" hidden></div>
+<div class="app-workspace">
+<header class="workspace-header">
+  <button id="sidebarOpenButton" class="mobile-menu-button icon-button" type="button" aria-label="Navigation öffnen">☰</button>
+  <div class="page-heading">
+    <h1 id="pageTitle">Hauptseite</h1>
+    <div id="pageBreadcrumb" class="breadcrumb" aria-label="Brotkrümelnavigation"><span>Übersicht</span></div>
+  </div>
+</header>
+<nav id="subNav" class="sub-nav" aria-label="Bereichsnavigation" hidden>
+  <button data-module-owner="email" data-tab="generator" data-permission="email_create">E-Mail erstellen</button>
+  <button data-module-owner="email" data-tab="templates" data-permission="templates_manage">Vorlagen</button>
+  <button data-module-owner="email" data-tab="categories" data-permission="categories_manage">Mailkategorien</button>
+  <button data-module-owner="documents" data-tab="document-create" data-permission="documents_create">Dokument erstellen</button>
+  <button data-module-owner="documents" data-tab="document-templates" data-permission="document_templates_manage">Dokumentvorlagen</button>
+  <button data-module-owner="documents" data-tab="document-blocks" data-permission="document_templates_manage">Textbausteine</button>
+  <button data-module-owner="bidder" data-tab="bid-questions" data-any-permission="bid_questions_view,bid_questions_manage">Gesamtübersicht</button>
+  <button data-module-owner="bidder" data-tab="bid-question-create" data-permission="bid_questions_manage">Einzelerfassung</button>
+  <button data-module-owner="bidder" data-tab="bid-question-batch" data-permission="bid_questions_manage">Batch-Erfassung</button>
+  <button data-module-owner="bidder" data-tab="bid-question-import" data-permission="bid_questions_manage">Excel-Import</button>
+  <button data-module-owner="bidder" data-tab="bid-answers" data-any-permission="bid_questions_view,bid_questions_manage,bid_answers_manage">Standardantworten</button>
+  <button data-module-owner="bidder" data-tab="bid-answer-create" data-permission="bid_answers_manage">Antwort anlegen</button>
+  <button data-module-owner="bidder" data-tab="bid-taxonomy" data-permission="bid_answers_manage">Kategorien und Themen</button>
+  <button data-module-owner="projects" data-tab="project-overview" data-permission="projects_view">Projektübersicht</button>
+  <button data-module-owner="projects" data-tab="project-create" data-permission="projects_manage">Projekt anlegen</button>
+  <button data-module-owner="projects" data-tab="bidders" data-permission="projects_view">Bieterverzeichnis</button>
+  <button data-module-owner="projects" data-tab="bidder-create" data-permission="projects_manage">Bieter anlegen</button>
+  <button data-module-owner="projects" data-tab="variables" data-permission="variables_manage">Platzhalter</button>
+  <button data-module-owner="users" data-tab="users" data-permission="users_manage">Benutzer</button>
+  <button data-module-owner="users" data-tab="roles" data-permission="roles_manage">Rollen</button>
+  <button data-module-owner="system" data-tab="system-status" data-permission="system_view">Systemstatus</button>
+  <button data-module-owner="system" data-tab="audit" data-permission="system_view">Änderungsprotokoll</button>
+  <button data-module-owner="system" data-tab="usage" data-permission="system_view">Nutzungsauswertung</button>
+</nav>
+<main>
+<section id="tab-dashboard" class="tab active">
+  <div class="section-head">
+    <div><h2>Hauptseite</h2><p class="muted">Persönliches Dashboard mit Ihren E-Mail-Kategorien.</p></div>
+    <div class="dashboard-tools"><input id="dashboardTemplateSearch" type="search" placeholder="Vorlagen durchsuchen" aria-label="Vorlagen auf der Hauptseite durchsuchen" aria-haspopup="dialog" readonly onclick="openDashboardTemplateSearch()"><div class="dashboard-add"><select id="dashboardCategorySelect" aria-label="Kachel auswählen"></select><button class="primary" onclick="addDashboardTile()">Kachel hinzufügen</button></div></div>
+  </div>
+  <div id="dashboardTiles" class="dashboard-grid"></div>
+</section>
+
+<section id="tab-generator" class="tab">
+  <div class="grid two">
+    <div class="card">
+      <h2>1. Ausgangsdaten</h2>
+      <input id="mode" type="hidden" value="manual">
+      <div class="mode-buttons" aria-label="Erstellungsmodus">
+        <button id="modeManualButton" type="button" class="active" onclick="setMode('manual')">Ohne Projekt / manuell</button>
+        <button id="modeProjectButton" type="button" onclick="setMode('project')">Gespeichertes Projekt</button>
+      </div>
+      <div id="projectSelectWrap" hidden>
+        <select id="projectSelect" hidden></select>
+        <label>Projekt<button id="projectPickerButton" type="button" class="select-button project-picker-button" onclick="openProjectPicker()">Projekt auswählen...</button></label>
+        <label>Kontakt<select id="contactSelect" onchange="contactChanged()"></select></label>
+      </div>
+      <select id="templateSelect" hidden></select>
+      <label class="template-picker-label">E-Mail-Vorlage<button id="templatePickerButton" type="button" class="select-button template-picker-button" onclick="openTemplatePicker()">E-Mailvorlage auswählen...</button></label>
+      <div id="manualFields"></div>
+      <button class="primary" onclick="generateEmail()">E-Mail erzeugen</button>
+    </div>
+    <div class="card">
+      <h2>2. Ergebnis bearbeiten</h2>
+      <div id="placeholderWarning" class="placeholder-warning" hidden><div class="warning-icon" aria-hidden="true">!</div><div><strong>Achtung!</strong><br>Es wurden nicht alle Platzhalter gesetzt.</div></div>
+      <label>Vorlagenname<input id="resultTemplateName" readonly></label>
+      <label>An<input id="resultTo" type="email"></label>
+      <label>CC<input id="resultCc"></label>
+      <label>Betreff<input id="resultSubject"></label>
+      <label id="resultBodyLabel">Text</label>
+      <div class="rich-editor" aria-labelledby="resultBodyLabel">
+        <div class="editor-toolbar" role="toolbar" aria-label="Formatierung des E-Mail-Textes">
+          <button type="button" title="Fett" aria-label="Fett" onmousedown="event.preventDefault()" onclick="formatEditor('resultBody','bold')"><strong>B</strong></button>
+          <button type="button" title="Kursiv" aria-label="Kursiv" onmousedown="event.preventDefault()" onclick="formatEditor('resultBody','italic')"><em>I</em></button>
+          <button type="button" title="Aufzählung" aria-label="Aufzählung" onmousedown="event.preventDefault()" onclick="formatEditor('resultBody','insertUnorderedList')">• Liste</button>
+          <button type="button" title="Nummerierung" aria-label="Nummerierung" onmousedown="event.preventDefault()" onclick="formatEditor('resultBody','insertOrderedList')">1. Liste</button>
+          <button type="button" title="Liste entfernen" aria-label="Liste entfernen" onmousedown="event.preventDefault()" onclick="formatEditor('resultBody','removeList')">Liste ×</button>
+          <button type="button" title="Link einfügen oder bearbeiten" aria-label="Link einfügen oder bearbeiten" onmousedown="event.preventDefault()" onclick="insertEditorLink('resultBody')">🔗 Link</button>
+          <button type="button" title="Bild einfügen oder bearbeiten" aria-label="Bild einfügen oder bearbeiten" onmousedown="event.preventDefault()" onclick="openEmailImageDialog('resultBody')">▧ Bild</button>
+          <button type="button" title="Rückgängig" aria-label="Rückgängig" onmousedown="event.preventDefault()" onclick="formatEditor('resultBody','undo')">↶</button>
+          <button type="button" title="Wiederholen" aria-label="Wiederholen" onmousedown="event.preventDefault()" onclick="formatEditor('resultBody','redo')">↷</button>
+        </div>
+        <div id="resultBody" class="editor-surface result-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="E-Mailtext" onpaste="handleEditorPaste(event)"></div>
+      </div>
+      <div id="templateNotice" class="template-notice" hidden>
+        <div class="notice-icon" aria-hidden="true">!</div><div><strong>Hinweis</strong><div id="templateNoticeText"></div><button id="noticeAcknowledgeButton" type="button" onclick="acknowledgeNotice()" hidden>Hinweistext gesehen</button></div>
+      </div>
+      <div class="actions">
+        <button class="primary" id="downloadEmlButton" onclick="runOutputAction('eml')">EML-Datei erzeugen</button>
+        <button id="openMailtoButton" onclick="runOutputAction('mailto')">In Outlook öffnen</button>
+        <button id="copyResultButton" onclick="runOutputAction('copy')">Nur E-Mailtext kopieren</button>
+        <button id="saveProjectEmailButton" type="button" onclick="saveEmailToProject()" hidden>In Projekt speichern</button>
+      </div>
+      <div class="export-info"><div class="info-icon" aria-hidden="true">i</div><div>Die bevorzugte Export-Methode ist EML: Formatierungen und eingebettete Bilder bleiben erhalten.<br>Die heruntergeladene Datei in Outlook öffnen und vor dem Versenden prüfen.<br>Outlook/Mailto übernimmt nur Text. Kopieren kann einfache Textformatierung übertragen; bei Bildern wird nach Bestätigung nur Klartext kopiert.</div></div>
+      <p class="hint">Die Anwendung versendet keine E-Mail. Die Nachricht wird vor dem Versand in Outlook geöffnet.</p>
+    </div>
+  </div>
+</section>
+
+<section id="tab-document-create" class="tab">
+  <div class="grid two document-create-layout">
+    <div class="card">
+      <h2>1. Dokument vorbereiten</h2>
+      <input id="documentMode" type="hidden" value="manual">
+      <div class="mode-buttons"><button id="documentModeManualButton" class="active" onclick="setDocumentMode('manual')">Ohne Projekt / manuell</button><button id="documentModeProjectButton" onclick="setDocumentMode('project')">Gespeichertes Projekt</button></div>
+      <div id="documentProjectWrap" hidden>
+        <input id="documentProjectSelect" type="hidden"><input id="documentContactIndex" type="hidden">
+        <label>Projekt<button id="documentProjectButton" class="select-button" onclick="openDocumentPicker('project')">Projekt auswählen...</button></label>
+        <label>Kontakt<button id="documentContactButton" class="select-button" onclick="openDocumentPicker('contact')">Kein Kontakt</button></label>
+      </div>
+      <input id="documentTemplateSelect" type="hidden">
+      <label>Dokumentvorlage<button id="documentTemplateButton" class="select-button" onclick="openDocumentPicker('template')">Dokumentvorlage auswählen...</button></label>
+      <div id="documentFieldList" class="form-grid"></div>
+    </div>
+    <div class="card">
+      <h2>2. Dokument ausgeben</h2>
+      <div id="documentTemplateInfo" class="info-box">Bitte zuerst eine Dokumentvorlage auswählen.</div>
+      <button data-document-output onclick="validateDocument()">Eingaben und Vorlage prüfen</button>
+      <div id="documentValidation" aria-live="polite"></div>
+      <div class="actions"><button data-document-output class="primary" onclick="generateDocument('docx')">Word-Datei erzeugen</button><button data-document-output id="documentPdfButton" onclick="generateDocument('pdf')">PDF-Datei erzeugen</button></div>
+      <div id="documentPdfInfo" class="info-box"></div>
+      <div id="documentSaveWrap" hidden><hr><p>Eine fertige Datei als Momentaufnahme im ausgewählten Projekt ablegen.</p><div class="actions"><label>Format<select id="documentSaveFormat"><option value="docx">Word (.docx)</option><option id="documentSavePdfOption" value="pdf">PDF</option></select></label><button data-document-output onclick="generateDocument(byId('documentSaveFormat').value,true)">Im Projekt speichern</button></div></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-document-templates" class="tab">
+  <div class="card"><div class="section-head"><div><h2>Dokumentvorlagen</h2><p class="muted">Vorlage auswählen, Original herunterladen oder eine neue Word-Version hochladen.</p></div><button class="primary" onclick="newDocumentTemplate()">Neue Vorlage</button></div><label>Vorlagen durchsuchen<input id="documentTemplateSearch" type="search" oninput="renderDocumentTemplateList()"></label><div id="documentTemplateList"></div></div>
+</section>
+<section id="tab-document-template-edit" class="tab">
+  <div class="section-head"><button onclick="switchTab('document-templates')">← Zur Vorlagenliste</button></div>
+  <div class="grid two document-create-layout">
+    <div class="card">
+      <h2 id="documentTemplateFormTitle">Dokumentvorlage anlegen</h2>
+      <input id="documentTemplateId" type="hidden">
+      <label>Name<input id="documentTemplateName" maxlength="300"></label>
+      <label>Beschreibung<textarea id="documentTemplateDescription" rows="4"></textarea></label>
+      <label>Word-Vorlage (.docx)<input id="documentTemplateFile" type="file" accept=".docx" onchange="inspectDocumentUpload()"></label>
+      <p class="muted">Layout und Texte bearbeiten Sie in Word. Beim Ersetzen der Datei bleibt die vorherige DOCX-Version abrufbar. Ohne neue Datei bleibt das Original unverändert.</p>
+      <label><input id="documentTemplateActive" type="checkbox" checked> Aktiv</label>
+      <div class="actions"><button id="saveDocumentTemplateButton" class="primary" onclick="saveDocumentTemplate()">Speichern</button><button id="testDocumentTemplateButton" data-permission="documents_create" onclick="testDocumentTemplate()" hidden>Mit Vorlage testen</button><button id="deleteDocumentTemplateButton" class="danger" onclick="byId('deleteDocumentTemplateDialog').showModal()" hidden>Löschen</button></div>
+    </div>
+    <div class="card">
+      <h2>Vorlagenprüfung</h2><div id="documentTemplateDetected" class="info-box">Nach dem Upload werden erkannte Platzhalter hier angezeigt.</div>
+      <h3>Original und Dateiversionen</h3><div id="documentTemplateVersions" class="document-version-list"></div>
+      <p class="muted">Die Prüfung ist ein Hinweis. Für einen echten Test verwenden Sie „Mit Vorlage testen“ und erzeugen eine Word-Datei. Textbausteine werden mit ihrem jeweils aktuellen Inhalt eingesetzt; Dateiversionen enthalten nur das Word-Original.</p>
+    </div>
+  </div>
+</section>
+
+<section id="tab-document-blocks" class="tab">
+  <div class="grid two">
+    <div class="card"><div class="section-head"><div><h2>Textbausteine</h2><p class="muted">In Word als <code>{{baustein.schluessel}}</code> einsetzen.</p></div><button onclick="newDocumentBlock()">Neuer Baustein</button></div><div id="documentBlockList"></div></div>
+    <div class="card"><h2 id="documentBlockFormTitle">Textbaustein anlegen</h2><input id="documentBlockId" type="hidden"><label>Name<input id="documentBlockName"></label><label>Schlüssel<input id="documentBlockKey" placeholder="z. B. vergabehinweis"></label><label>Kategorie<input id="documentBlockCategory"></label><label>Inhalt<textarea id="documentBlockContent" rows="10" placeholder="Auch {{projekt.bezeichnung}} ist möglich."></textarea></label><label><input id="documentBlockActive" type="checkbox" checked> Aktiv</label><div class="actions"><button class="primary" onclick="saveDocumentBlock()">Speichern</button><button onclick="newDocumentBlock()">Leeren</button><button id="deleteDocumentBlockButton" class="danger" onclick="deleteDocumentBlock()" hidden>Löschen</button></div></div>
+  </div>
+</section>
+
+<section id="tab-bid-questions" class="tab">
+  <div class="card">
+    <div class="section-head"><div><h2>Bieterfragen – Gesamtübersicht</h2><p class="muted">Projektübergreifende Dokumentation aller erfassten Bieterfragen.</p></div><button data-permission="bid_questions_manage" class="primary" onclick="switchTab('bid-question-create')">Bieterfragen erfassen</button></div>
+    <div class="bid-filter-bar"><label>Projekt<select id="bidQuestionProjectFilter" onchange="renderBidQuestionList()"><option value="">Alle Projekte</option></select></label><label>Kategorie<select id="bidQuestionCategoryFilter" onchange="renderBidQuestionList()"><option value="">Alle Kategorien</option></select></label><label>Bieter<select id="bidQuestionBidderFilter" onchange="renderBidQuestionList()"><option value="">Alle Bieter</option></select></label></div>
+    <div class="bid-fulltext-search"><label>Volltextsuche<input id="bidQuestionSearch" type="search" placeholder="Suchbegriff eingeben" oninput="renderBidQuestionList()"></label><fieldset><legend>Durchsuchte Felder</legend><label><input type="checkbox" data-bid-search-field="question" checked onchange="renderBidQuestionList()"> Frage</label><label><input type="checkbox" data-bid-search-field="agency_comment" checked onchange="renderBidQuestionList()"> Kommentar</label><label><input type="checkbox" data-bid-search-field="answer" checked onchange="renderBidQuestionList()"> Antwort</label><label><input type="checkbox" data-bid-search-field="subject" checked onchange="renderBidQuestionList()"> Thema</label><label><input type="checkbox" data-bid-search-field="bidder" checked onchange="renderBidQuestionList()"> Bieter</label></fieldset></div>
+    <div id="bidQuestionList" class="bid-question-list"></div>
+  </div>
+</section>
+
+<section id="tab-bid-question-create" class="tab">
+  <div class="card narrow bid-create-layout">
+      <div class="section-head"><div><h2>Einzelne Bieterfrage erfassen</h2><p class="muted">Projekt, Kategorie, Thema und bei Bedarf eine Standardantwort bequem auswählen.</p></div></div>
+      <input id="bidQuestionProject" type="hidden"><input id="bidQuestionCategoryId" type="hidden"><input id="bidQuestionTopicId" type="hidden"><input id="bidQuestionBidderId" type="hidden"><input id="bidQuestionStandardAnswerId" type="hidden"><input id="bidQuestionStandardVariantId" type="hidden">
+      <div class="year-picker"><label>Jahr<input id="bidQuestionYear" type="number" min="2000" max="2100"></label><button type="button" onclick="setCurrentBidYear('bidQuestionYear')">Aktuelles Jahr</button></div>
+      <label>Projekt<button id="bidQuestionProjectButton" type="button" class="select-button" onclick="openBidProjectPicker('single')">Projekt auswählen...</button></label>
+      <label>Fragenkategorie<button id="bidQuestionCategoryButton" type="button" class="select-button" onclick="openBidTaxonomyPicker('category','single')">Fragenkategorie auswählen...</button></label>
+      <label>Bieter<button id="bidQuestionBidderButton" type="button" class="select-button" onclick="openBidderPicker('single')">Bieter auswählen...</button></label>
+      <label>Thema<button id="bidQuestionTopicButton" type="button" class="select-button" onclick="openBidTaxonomyPicker('topic','single')">Thema auswählen...</button></label>
+      <label>Bieterfrage<textarea id="bidQuestionText" rows="5"></textarea></label>
+      <label>Kommentar Agentur Wieseke<div class="answer-input-head"><span>Eigener Kommentar oder Antwortfall übernehmen</span><button type="button" class="icon-text-button" onclick="openStandardAnswerPicker('single','comment')">Kommentar auswählen</button></div><textarea id="bidQuestionComment" rows="4"></textarea></label>
+      <label>Entscheidung<select id="bidQuestionDecision" onchange="bidDecisionChanged()"><option value="">Noch keine Entscheidung</option><option value="zugelassen">zugelassen</option><option value="abgelehnt">abgelehnt</option></select></label>
+      <label>Antwort<div class="answer-input-head"><span>Eigene Antwort verfassen oder passende Variante übernehmen</span><button type="button" class="icon-text-button" onclick="openStandardAnswerPicker('single','answer')">Antwortvariante auswählen</button></div><textarea id="bidQuestionAnswer" rows="7"></textarea></label>
+      <button class="primary" onclick="saveBidQuestion()">Bieterfrage speichern</button>
+  </div>
+</section>
+
+<section id="tab-bid-question-batch" class="tab">
+  <div class="card">
+    <div class="info-box">Für die Erfassung in Excel: <button type="button" onclick="downloadBidWorkbook()">Aktuelle Excel-Vorlage herunterladen</button> <button type="button" onclick="switchTab('bid-question-import')">Ausgefüllte Datei importieren</button></div>
+    <div class="section-head"><div><h2>Batch-Erfassung</h2><p class="muted">Projekt einmal auswählen und anschließend mehrere Bieterfragen zeilenweise erfassen.</p></div><button type="button" onclick="addBidBatchRow()">Zeile hinzufügen</button></div>
+    <div class="batch-head-fields"><input id="bidBatchProject" type="hidden"><label class="batch-project-select">Projekt<button id="bidBatchProjectButton" type="button" class="select-button" onclick="openBidProjectPicker('batch')">Projekt auswählen...</button></label><div class="year-picker"><label>Jahr<input id="bidBatchYear" type="number" min="2000" max="2100"></label><button type="button" onclick="setCurrentBidYear('bidBatchYear')">Aktuelles Jahr</button></div></div>
+    <div id="bidBatchRows" class="bid-batch-rows"></div>
+    <div class="actions"><button class="primary" onclick="saveBidBatch()">Alle Zeilen speichern</button><button type="button" onclick="clearBidBatch()">Eingaben leeren</button></div>
+  </div>
+</section>
+
+<section id="tab-bid-question-import" class="tab">
+    <div class="card">
+      <div class="section-head"><div><h2>Mehrere Fragen aus Excel übernehmen</h2><p class="muted">Aktuelle Vorlage herunterladen, ausfüllen und die Datei hier prüfen.</p></div><button onclick="downloadBidWorkbook()">Excel-Vorlage herunterladen</button></div>
+      <input id="bidImportProject" type="hidden"><label>Projekt<button id="bidImportProjectButton" type="button" class="select-button" onclick="openBidProjectPicker('import')">Projekt auswählen...</button></label><div class="year-picker"><label>Jahr<input id="bidImportYear" type="number" min="2000" max="2100"></label><button type="button" onclick="setCurrentBidYear('bidImportYear')">Aktuelles Jahr</button></div>
+      <label>Ausgefüllte Excel-Vorlage (.xlsx)<input id="bidWorkbookFile" type="file" accept=".xlsx" onchange="clearBidWorkbookPreview()"></label>
+      <div class="actions"><button id="bidWorkbookPreviewButton" onclick="previewBidWorkbook()">Datei prüfen und Vorschau anzeigen</button><button id="bidWorkbookImportButton" class="primary" onclick="importBidWorkbook()" disabled>Geprüfte Fragen importieren</button></div>
+      <p class="hint">Projekt und Jahr gelten für alle Zeilen. Maximal 500 Fragen. Die Listen entsprechen dem Stand beim Download. Identische Fragen im selben Projekt/Jahr werden übersprungen.</p>
+      <div id="bidWorkbookSummary" aria-live="polite"></div><div id="bidWorkbookPreview" class="import-table-wrap"></div>
+      <details class="legacy-bid-import"><summary>Alternativ: Text aus Excel einfügen</summary>
+      <p class="muted">Spalten: Fragenkategorie; Bieter; Thema; Bieterfrage; Kommentar Agentur Wieseke; Entscheidung; Antwort. Für Dropdown-Zuordnungen bitte den Dateiimport verwenden.</p>
+      <label>Excel-Daten<textarea id="bidImportText" rows="12" placeholder="Fahrgestell;Bieter GmbH;Fristverlängerung;..." oninput="previewBidImport()"></textarea></label>
+      <div id="bidImportPreview" class="import-table-wrap"><p class="muted">Noch keine Zeilen erkannt.</p></div>
+      <button class="primary" onclick="importBidQuestions()">Erkannte Fragen importieren</button>
+      </details>
+    </div>
+</section>
+
+<section id="tab-bid-answers" class="tab">
+  <div class="card">
+    <div class="section-head"><div><h2>Standardantworten</h2><p class="muted">Durchsuchen Sie Kategorien, Themen, Fragen und Antworttexte bereits während der Eingabe.</p></div><button data-permission="bid_answers_manage" class="primary" onclick="newBidAnswer()">Neue Antwort anlegen</button></div>
+    <label class="search-field">Standardantworten durchsuchen<input id="bidAnswerSearch" type="search" placeholder="Kategorie, Thema oder Text eingeben" oninput="renderBidAnswerLibrary()"></label>
+    <div id="bidAnswerLibrary" class="bid-answer-library"></div>
+  </div>
+</section>
+
+<section id="tab-bid-answer-create" class="tab">
+  <div class="card narrow bid-answer-form">
+    <div class="section-head"><div><h2 id="bidAnswerFormTitle">Standardantwort anlegen</h2><p class="muted">Die Antwort wird einem Thema und damit automatisch einer Kategorie zugeordnet.</p></div><button onclick="switchTab('bid-answers')">Zur Übersicht</button></div>
+    <input id="bidAnswerId" type="hidden">
+    <input id="bidAnswerTopic" type="hidden"><label>Thema<button id="bidAnswerTopicButton" type="button" class="select-button" onclick="openBidTaxonomyPicker('topic','answer-form')">Thema auswählen...</button></label>
+    <label>Kurzform Frage<input id="bidAnswerShortQuestion" maxlength="300"></label>
+    <label>Frage<textarea id="bidAnswerQuestion" rows="5"></textarea></label>
+    <label>Kommentar Agentur Wieseke<textarea id="bidAnswerComment" rows="5"></textarea></label>
+    <div class="section-head"><div><h3>Antwortvarianten</h3><p class="muted">Pro Antwortfall sind mehrere zugelassene und abgelehnte Formulierungen möglich.</p></div><button type="button" onclick="addBidAnswerVariant()">Variante hinzufügen</button></div>
+    <div id="bidAnswerVariants" class="bid-answer-variants"></div>
+    <div class="actions"><button class="primary" onclick="saveBidAnswer()">Standardantwort speichern</button><button id="deleteBidAnswerButton" class="danger" onclick="deleteBidAnswer()" hidden>Löschen</button></div>
+  </div>
+</section>
+
+<section id="tab-bidders" class="tab">
+  <div class="card"><div class="section-head"><div><h2>Bieterverzeichnis</h2><p class="muted">Alle zentral verwalteten Bieter.</p></div><button data-permission="projects_manage" onclick="newBidder();switchTab('bidder-create')">Neuen Bieter erfassen</button></div><label>Verzeichnis durchsuchen<input id="bidderDirectorySearch" type="search" placeholder="Bieter, Firma, Ort oder Land" oninput="renderBidderDirectory()"></label><div id="bidderDirectoryList" class="bidder-directory-grid"></div></div>
+</section>
+
+<section id="tab-bidder-create" class="tab">
+  <div class="card narrow" data-permission="projects_manage">
+    <div class="section-head"><div><h2>Bieter erfassen</h2><p class="muted">Per Formular oder gesammelt über CSV/JSON.</p></div><button onclick="switchTab('bidders')">Zum Verzeichnis</button></div>
+    <input id="bidderId" type="hidden"><label>Bieter *<input id="bidderName" maxlength="300"></label>
+    <label>Firmenname<input id="bidderCompany"></label><label>Straße<input id="bidderStreet"></label>
+    <div class="grid two compact-grid"><label>PLZ<input id="bidderPostalCode"></label><label>Ort<input id="bidderCity"></label></div>
+    <label>Land<input id="bidderCountry"></label><label>Website<input id="bidderWebsite" type="url"></label>
+    <label>Kommentar<textarea id="bidderComment" rows="3" maxlength="10000"></textarea></label>
+    <label><input id="bidderActive" type="checkbox" checked> Aktiv</label>
+    <div class="actions"><button class="primary" onclick="saveBidder()">Speichern</button><button onclick="newBidder()">Leeren</button><button id="deleteBidderButton" class="danger" onclick="deleteBidder()" hidden>Löschen</button></div>
+    <hr><h3>Import</h3><p class="muted">CSV: Bieter; Firmenname; Straße; PLZ; Ort; Land; Website; Kommentar (optional). JSON-Feld für Kommentar: comment.</p>
+    <label>CSV oder JSON<textarea id="bidderImportText" rows="8"></textarea></label><div class="actions"><button onclick="importBidders()">Importieren</button><button onclick="downloadBidderExampleJson()">Beispiel-JSON herunterladen</button></div>
+  </div>
+</section>
+
+<section id="tab-bid-taxonomy" class="tab">
+  <div class="grid two taxonomy-layout">
+    <div class="card"><h2>Fragenkategorien</h2><p class="muted">Per Drag-and-drop ordnen. Enter speichert den Eintrag.</p><input id="bidCategoryId" type="hidden"><label>Bezeichnung<input id="bidCategoryName" onkeydown="if(event.key==='Enter'){event.preventDefault();saveBidCategory()}"></label><label><input id="bidCategoryActive" type="checkbox" checked> Aktiv</label><div class="actions"><button class="primary" onclick="saveBidCategory()">Kategorie speichern</button><button onclick="newBidCategory()">Neu</button><button id="deleteBidCategoryButton" class="danger" onclick="deleteBidCategory()" hidden>Löschen</button></div><div id="bidCategoryList" class="taxonomy-list"></div></div>
+    <div class="card"><h2>Themen</h2><p class="muted">Jedes Thema gehört zu einer Kategorie; innerhalb der Kategorie kann es geordnet werden. Enter speichert den Eintrag.</p><input id="bidTopicId" type="hidden"><label>Kategorie<select id="bidTopicCategory"></select></label><label>Bezeichnung<input id="bidTopicName" onkeydown="if(event.key==='Enter'){event.preventDefault();saveBidTopic()}"></label><label><input id="bidTopicActive" type="checkbox" checked> Aktiv</label><div class="actions"><button class="primary" onclick="saveBidTopic()">Thema speichern</button><button onclick="newBidTopic()">Neu</button><button id="deleteBidTopicButton" class="danger" onclick="deleteBidTopic()" hidden>Löschen</button></div><div id="bidTopicList" class="taxonomy-list"></div></div>
+  </div>
+</section>
+
+<section id="tab-excel-import" class="tab">
+  <div class="card narrow excel-import-card">
+    <h2>Projekt aus Excel übernehmen</h2>
+    <p>Excel hat die Projektdaten als JSON in die Zwischenablage gelegt. Lesen Sie die Daten ein, prüfen Sie die Vorschau und bestätigen Sie den Import.</p>
+    <button class="primary" type="button" onclick="readExcelClipboard()">Daten aus Zwischenablage einlesen</button>
+    <label>Projekt-JSON<textarea id="excelImportJson" rows="14" oninput="previewExcelImport()" placeholder="Alternativ JSON hier einfügen"></textarea></label>
+    <div id="excelImportPreview" class="info-box">Noch keine Projektdaten eingelesen.</div>
+    <div class="actions"><button class="primary" type="button" onclick="importExcelProject()">Projekt anlegen / aktualisieren</button><button type="button" onclick="switchTab('project-overview')">Zur Projektübersicht</button></div>
+  </div>
+</section>
+
+<section id="tab-project-overview" class="tab">
+  <div class="card">
+    <div class="section-head"><div><h2>Projektübersicht</h2><p class="muted">Alle gespeicherten Projekte in einer eigenen Ansicht.</p></div><button data-permission="projects_manage" onclick="switchTab('project-create')">Neues Projekt anlegen</button></div>
+    <div class="project-filter-bar"><label class="search-field">Projekte durchsuchen<input id="projectOverviewSearch" type="search" placeholder="Projektnummer oder Teil der Projektbezeichnung" oninput="renderProjectList()"></label><label>Sortierung<select id="projectSortOrder" onchange="renderProjectList()"><option value="az">A–Z</option><option value="za">Z–A</option></select></label></div>
+    <label><input id="showArchivedProjects" type="checkbox" onchange="renderProjectList()"> Archivierte Projekte anzeigen</label>
+    <div id="archivedProjectBulkActions" class="archive-bulk-actions" hidden><label><input type="checkbox" onchange="toggleAllArchivedSelections('project',this.checked)"> Alle auswählen</label><button type="button" class="danger" onclick="openBulkDelete('project')">Ausgewählte endgültig löschen</button></div>
+    <div id="projectList"></div>
+  </div>
+</section>
+
+<section id="tab-project-detail" class="tab">
+  <div class="card project-detail-card">
+    <div class="section-head"><div><button type="button" class="back-link" onclick="switchTab('project-overview')">← Zur Projektübersicht</button><h2 id="projectDetailTitle">Projekt</h2><p id="projectDetailMeta" class="muted"></p></div><div id="projectDetailActions" class="actions compact"></div></div>
+    <div class="project-detail-layout"><section><h3>Projektdaten</h3><div id="projectDetailVariables" class="detail-data-grid"></div></section><section><div class="contact-section-head"><h3>Kontakte</h3><button id="projectContactsEditButton" type="button" hidden>Kontakte bearbeiten</button></div><div id="projectDetailContacts" class="project-contact-list"></div></section></div>
+    <section class="project-workspace"><h3>Projektphasen</h3><div class="project-phase-board">
+      <article class="project-phase"><h4>0 – Akquise</h4><div class="phase-empty">Noch keine Inhalte aus Fachmodulen.</div></article>
+      <article class="project-phase"><h4>1 – Projektsteuerung</h4><div class="phase-empty">Noch keine Inhalte aus Fachmodulen.</div></article>
+      <article class="project-phase"><h4>2 – Vorbereitung Ausschreibung</h4><div class="phase-empty">Noch keine Inhalte aus Fachmodulen.</div></article>
+      <article class="project-phase phase-highlight"><h4>3 – Ausschreibung</h4><div id="projectPhaseBidQuestions" class="phase-content"></div></article>
+      <article class="project-phase"><h4>4 – Vergabe</h4><div class="phase-empty">Noch keine Inhalte aus Fachmodulen.</div></article>
+      <article class="project-phase"><h4>5 – Auftragsabwicklung</h4><div class="phase-empty">Noch keine Inhalte aus Fachmodulen.</div></article>
+    </div></section>
+    <section class="project-workspace"><div class="section-head"><div><h3>Gespeicherte E-Mails</h3><p class="muted">Aus dem E-Mail-Modul im Projekt abgelegte Momentaufnahmen.</p></div></div><div id="projectSavedEmails" class="project-email-list"></div></section>
+    <section id="projectDocumentSection" class="project-workspace"><div class="section-head"><div><h3>Gespeicherte Dokumente</h3><p class="muted">Fertige Word- und PDF-Dateien – unabhängig von späteren Vorlagenänderungen.</p></div><button data-permission="documents_create" onclick="createDocumentForCurrentProject()">Dokument erstellen</button></div><div id="projectSavedDocuments" class="project-email-list"></div></section>
+  </div>
+</section>
+
+<section id="tab-project-create" class="tab">
+  <div class="card">
+    <div class="section-head">
+      <div><h2>Projekt anlegen oder aktualisieren</h2><p class="muted">Per JSON-Datei oder direkt über ein Formular.</p></div>
+      <button onclick="downloadProjectJsonTemplate()">Leere Projekt-JSON herunterladen</button>
+    </div>
+    <div class="subtabs">
+      <button id="projectJsonTabButton" onclick="showProjectEntry('json')">JSON-Import</button>
+      <button id="projectFormTabButton" class="active" onclick="showProjectEntry('form')">Formular</button>
+    </div>
+    <div id="projectJsonEntry" hidden>
+      <div class="grid two">
+        <div>
+          <input type="file" id="jsonFile" accept=".json,application/json" onchange="loadJsonFile(this)">
+          <label>Oder JSON einfügen<textarea id="jsonPaste" rows="14" placeholder='{"schema_version":"1.0","projekt":{...}}'></textarea></label>
+          <button class="primary" onclick="importProject()">Projekt importieren / aktualisieren</button>
+        </div>
+        <div class="info-box">Bei gleicher <code>projekt.id</code> wird der bisherige Projektstand ersetzt. Excel beziehungsweise die JSON-Datei kann weiterhin die führende Quelle bleiben.</div>
+      </div>
+    </div>
+    <div id="projectFormEntry">
+      <div id="projectManualFields" class="form-grid"></div>
+      <button class="primary" onclick="saveManualProject()">Projekt aus Formular speichern</button>
+    </div>
+  </div>
+</section>
+
+<section id="tab-templates" class="tab">
+    <div class="card">
+      <div class="section-head template-list-head"><h2>Vorlagen</h2><button onclick="newTemplate()">Neue Vorlage erstellen</button></div>
+      <p class="hint">Vorlagen können am Griff innerhalb ihrer Kategorie verschoben werden.</p>
+      <label class="archive-filter"><input id="showArchivedTemplates" type="checkbox" onchange="loadTemplates()"> Archivierte Vorlagen anzeigen</label>
+      <div id="archivedTemplateBulkActions" class="archive-bulk-actions" hidden><label><input type="checkbox" onchange="toggleAllArchivedSelections('template',this.checked)"> Alle auswählen</label><button type="button" class="danger" onclick="openBulkDelete('template')">Ausgewählte endgültig löschen</button></div>
+      <div class="archive-filter-spacer" aria-hidden="true"></div>
+      <div id="templateList"></div>
+    </div>
+</section>
+
+<!-- The list and editor have separate pages. Field identifiers remain stable
+     so placeholder insertion, testing, export and history share the same form. -->
+<section id="tab-template-edit" class="tab">
+  <div class="section-head"><button type="button" class="back-link" onclick="switchTab('templates')">← Zur Vorlagenliste</button></div>
+  <div class="grid two template-edit-layout">
+    <div class="card">
+      <h2 id="templateEditorTitle">Vorlage bearbeiten</h2>
+      <input type="hidden" id="tplId">
+      <label>Name<input id="tplName"></label>
+      <label>Kategorie<select id="tplCategory"></select></label>
+      <label>Betreff<input id="tplSubject"></label>
+      <label id="tplBodyLabel">E-Mail-Text</label>
+      <div class="rich-editor" aria-labelledby="tplBodyLabel">
+        <div class="editor-toolbar" role="toolbar" aria-label="Formatierung der Vorlage">
+          <button type="button" title="Fett" aria-label="Fett" onmousedown="event.preventDefault()" onclick="formatEditor('tplBody','bold')"><strong>B</strong></button>
+          <button type="button" title="Kursiv" aria-label="Kursiv" onmousedown="event.preventDefault()" onclick="formatEditor('tplBody','italic')"><em>I</em></button>
+          <button type="button" title="Aufzählung" aria-label="Aufzählung" onmousedown="event.preventDefault()" onclick="formatEditor('tplBody','insertUnorderedList')">• Liste</button>
+          <button type="button" title="Nummerierung" aria-label="Nummerierung" onmousedown="event.preventDefault()" onclick="formatEditor('tplBody','insertOrderedList')">1. Liste</button>
+          <button type="button" title="Liste entfernen" aria-label="Liste entfernen" onmousedown="event.preventDefault()" onclick="formatEditor('tplBody','removeList')">Liste ×</button>
+          <button type="button" title="Link einfügen oder bearbeiten" aria-label="Link einfügen oder bearbeiten" onmousedown="event.preventDefault()" onclick="insertEditorLink('tplBody')">🔗 Link</button>
+          <button type="button" title="Bild einfügen oder bearbeiten" aria-label="Bild einfügen oder bearbeiten" onmousedown="event.preventDefault()" onclick="openEmailImageDialog('tplBody')">▧ Bild</button>
+          <button type="button" title="Rückgängig" aria-label="Rückgängig" onmousedown="event.preventDefault()" onclick="formatEditor('tplBody','undo')">↶</button>
+          <button type="button" title="Wiederholen" aria-label="Wiederholen" onmousedown="event.preventDefault()" onclick="formatEditor('tplBody','redo')">↷</button>
+        </div>
+        <div id="tplBody" class="editor-surface template-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Vorlagentext mit Platzhaltern" onpaste="handleEditorPaste(event)"></div>
+      </div>
+      <p class="hint">Absätze, Fett, Kursiv, Listen, Links und PNG/JPG-Bilder. Zum Ändern oder Entfernen ein Bild anklicken. Bilder bleiben im EML-Export erhalten. Schriftarten, Textgrößen und Farben werden entfernt.</p>
+      <div id="templateValidation" class="template-validation" aria-live="polite"></div>
+      <p class="hint">Die Vorlagenprüfung gibt ausschließlich Hinweise. Sie verhindert das Speichern nicht.</p>
+      <label><input id="tplNoticeEnabled" type="checkbox" onchange="toggleTemplateNoticeEditor()"> Hinweisfeld aktivieren</label>
+      <div id="tplNoticeSettings" hidden>
+      <label id="tplNoticeBodyLabel">Hinweistext</label>
+      <div class="rich-editor" aria-labelledby="tplNoticeBodyLabel">
+        <div class="editor-toolbar" role="toolbar" aria-label="Formatierung des Hinweistextes">
+          <button type="button" title="Fett" aria-label="Hinweis fett" onmousedown="event.preventDefault()" onclick="formatEditor('tplNoticeBody','bold')"><strong>B</strong></button>
+          <button type="button" title="Kursiv" aria-label="Hinweis kursiv" onmousedown="event.preventDefault()" onclick="formatEditor('tplNoticeBody','italic')"><em>I</em></button>
+          <button type="button" title="Aufzählung" aria-label="Hinweis Aufzählung" onmousedown="event.preventDefault()" onclick="formatEditor('tplNoticeBody','insertUnorderedList')">• Liste</button>
+          <button type="button" title="Nummerierung" aria-label="Hinweis Nummerierung" onmousedown="event.preventDefault()" onclick="formatEditor('tplNoticeBody','insertOrderedList')">1. Liste</button>
+          <button type="button" title="Liste entfernen" aria-label="Hinweis Liste entfernen" onmousedown="event.preventDefault()" onclick="formatEditor('tplNoticeBody','removeList')">Liste ×</button>
+          <button type="button" title="Link einfügen oder bearbeiten" aria-label="Hinweis Link einfügen oder bearbeiten" onmousedown="event.preventDefault()" onclick="insertEditorLink('tplNoticeBody')">🔗 Link</button>
+          <button type="button" title="Rückgängig" aria-label="Hinweis rückgängig" onmousedown="event.preventDefault()" onclick="formatEditor('tplNoticeBody','undo')">↶</button>
+          <button type="button" title="Wiederholen" aria-label="Hinweis wiederholen" onmousedown="event.preventDefault()" onclick="formatEditor('tplNoticeBody','redo')">↷</button>
+        </div>
+        <div id="tplNoticeBody" class="editor-surface notice-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Wichtiger Hinweis oder Anlagencheckliste" onpaste="handleEditorPaste(event)"></div>
+      </div>
+      <label>Verhalten des Hinweisfeldes<select id="tplNoticeMode" onchange="toggleTemplateNoticeEditor()">
+        <option value="display">Nur anzeigen</option>
+        <option value="dialog">Vor jeder Ausgabe Warnung bestätigen</option>
+        <option value="acknowledge">Ausgabe erst nach „Hinweistext gesehen“ freigeben</option>
+      </select></label>
+      <label id="tplNoticeButtonLabelWrap">Beschriftung der Bestätigungsschaltfläche<input id="tplNoticeButtonLabel" value="Hinweistext gesehen"></label>
+      </div>
+      <label><input id="tplActive" type="checkbox" checked> Vorlage aktiv</label>
+      <div class="actions"><button class="primary" onclick="saveTemplate()">Speichern</button><button onclick="openTemplateTest()">Vorlage testen</button><button id="templateHistoryButton" onclick="openTemplateHistory()" hidden>Versionshistorie</button><span id="templateExportActions" class="inline-actions" hidden><button onclick="exportTemplate('json')">JSON exportieren</button><button onclick="exportTemplate('eml')">EML exportieren</button></span><button onclick="newTemplate()">Neue Vorlage</button></div>
+    </div>
+    <aside class="card template-placeholder-panel" aria-label="Platzhalter und Vorlageninformationen">
+      <h2>Platzhalter</h2>
+      <p class="hint">Platzhalter anklicken, um sie an der zuletzt gewählten Stelle im Betreff, E-Mail-Text oder Hinweis einzufügen.</p>
+      <details open>
+        <summary>Platzhalter einfügen</summary>
+        <div id="variableChips" class="chips"></div>
+      </details>
+      <div id="templateIdentity" class="template-identity" hidden>
+        <h3>Vorlageninformationen</h3>
+        <label>Vorlagen-ID<input id="tplDisplayId" readonly></label>
+        <div class="copy-field"><label>Direkter Link<input id="tplDirectLink" readonly></label><button type="button" class="icon-button" title="Link kopieren" aria-label="Link kopieren" onclick="copyTemplateIdentityLink()">⧉</button></div>
+      </div>
+    </aside>
+  </div>
+</section>
+
+<section id="tab-categories" class="tab">
+  <div class="grid two">
+    <div class="card"><h2>Mailkategorien</h2><div id="categoryList"></div><button onclick="newCategory()">Neue Kategorie</button></div>
+    <div class="card">
+      <h2>Kategorie bearbeiten</h2><input type="hidden" id="categoryId">
+      <label>Name<input id="categoryName"></label>
+      <label><input id="categoryActive" type="checkbox" checked> Aktiv</label>
+      <div class="actions"><button class="primary" onclick="saveCategory()">Speichern</button><button onclick="newCategory()">Neu</button><button class="danger" id="deleteCategoryButton" onclick="deleteCategory()" hidden>Löschen</button></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-variables" class="tab">
+  <div class="grid two">
+    <div class="card">
+      <div class="section-head"><h2>Platzhalter</h2><div class="actions compact"><button onclick="newCustomVariable()">Benutzerdefinierten Platzhalter anlegen</button><button onclick="downloadProjectJsonTemplate()">Projekt-JSON herunterladen</button></div></div>
+      <p class="hint">Kontakt- und Ansprachefelder werden hier genauso gepflegt wie Projekt- und manuelle Felder.</p>
+      <div id="variableList"></div>
+    </div>
+    <div class="card">
+      <h2>Platzhalter bearbeiten</h2>
+      <input type="hidden" id="varId">
+      <label>Schlüssel<input id="varKey" placeholder="eingabe.rueckmeldefrist"></label>
+      <label>Beschriftung<input id="varLabel" placeholder="Rückmeldefrist"></label>
+      <label>Feldtyp<select id="varType">
+        <option value="text">Text</option><option value="textarea">Mehrzeiliger Text</option>
+        <option value="date">Datum</option><option value="number">Zahl</option><option value="email">E-Mail-Adresse</option>
+      </select></label>
+      <label>Datenquelle<select id="varSource">
+        <option value="project">Projekt</option><option value="client">Auftraggeber</option>
+        <option value="contact">Kontakt / Ansprache</option><option value="user">Angemeldeter Benutzer</option>
+        <option value="manual">Nur E-Mail / manuell</option>
+      </select></label>
+      <label><input id="varRequired" type="checkbox"> Pflichtfeld</label>
+      <label><input id="varActive" type="checkbox" checked> Aktiv</label>
+      <div class="actions"><button class="primary" onclick="saveVariable()">Speichern</button><button onclick="newVariable()">Neu</button><button class="danger" id="deleteVariableButton" onclick="deleteVariable()" hidden>Löschen</button></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-users" class="tab">
+  <div class="actions"><button onclick="switchTab('account');byId('projectApiKeyPanel').scrollIntoView()">API-Schlüssel verwalten</button></div>
+  <div class="grid two">
+    <div class="card">
+      <h2>Benutzer anlegen</h2>
+      <label>Benutzername<input id="uUsername"></label>
+      <label>Vorname<input id="uFirst"></label>
+      <label>Nachname<input id="uLast"></label>
+      <label>E-Mail<input id="uEmail" type="email"></label>
+      <label>Rolle<select id="uRole"></select></label>
+      <label><input id="uMustChangePassword" type="checkbox" checked> Passwort beim ersten Login ändern</label>
+      <label><input id="uPasswordPolicyExempt" type="checkbox"> Passwortrichtlinie für dieses Konto aussetzen</label>
+      <p class="hint">Diese Ausnahme sollte nur verwendet werden, wenn die normale Passwortrichtlinie betrieblich nicht möglich ist. Ein leeres Passwort bleibt ausgeschlossen.</p>
+      <button class="primary" onclick="createUser()">Benutzer anlegen</button>
+    </div>
+    <div class="card"><h2>Benutzerkonten</h2><div id="userList"></div></div>
+  </div>
+</section>
+
+<section id="tab-roles" class="tab">
+  <div class="grid two">
+    <div class="card">
+      <h2>Rollen</h2>
+      <p class="hint">Rollen bündeln Berechtigungen und den Zugriff auf Mailkategorien. Alle Vorlagen einer freigegebenen Kategorie sind automatisch sichtbar.</p>
+      <div id="roleList"></div>
+      <button onclick="newRole()">Neue Rolle</button>
+    </div>
+    <div class="card">
+      <h2>Rolle bearbeiten</h2>
+      <div id="roleLockedNotice" class="info-box" hidden>Die Administratorrolle ist geschützt und kann nicht bearbeitet werden.</div>
+      <input type="hidden" id="roleId">
+      <label>Rollenname<input id="roleName"></label>
+      <h3>Berechtigungen</h3>
+      <div id="rolePermissionEditor" class="check-list"></div>
+      <h3>Zugriff auf Mailkategorien</h3>
+      <label><input id="roleAllCategories" type="checkbox" onchange="renderRoleCategoryEditor()"> Zugriff auf alle aktiven Kategorien</label>
+      <div id="roleCategoryEditor" class="check-list"></div>
+      <div class="actions"><button class="primary" id="saveRoleButton" onclick="saveRole()">Speichern</button><button onclick="newRole()">Neu</button><button class="danger" id="deleteRoleButton" onclick="deleteRole()" hidden>Löschen</button></div>
+    </div>
+  </div>
+</section>
+
+<section id="tab-settings" class="tab">
+  <div class="card narrow">
+    <section data-permission="settings_manage">
+      <h2>Anwendungseinstellungen</h2>
+      <label>Name der Anwendung<input id="settingsAppName"></label>
+      <label>Logo auswählen<input id="settingsLogoFile" type="file" accept="image/png,image/jpeg,image/webp,image/gif" onchange="previewSettingsLogo(this)"></label>
+      <div class="logo-preview"><img id="settingsLogoPreview" src="/static/logo.png" alt="Logo-Vorschau"></div>
+      <label><input id="settingsRemoveLogo" type="checkbox"> Eigenes Logo entfernen und Standardlogo verwenden</label>
+      <h3>Reihenfolge der Hauptnavigation</h3>
+      <p class="hint">Ziehen Sie die Bereiche am Griff in die gewünschte Reihenfolge. Die Einstellung gilt für alle Benutzer; ausgeblendete Bereiche bleiben weiterhin von Rollenrechten abhängig.</p>
+      <div id="navigationOrderList" class="navigation-order-list"></div>
+      <button class="primary" onclick="saveSettings()">Einstellungen speichern</button>
+    </section>
+    <section class="settings-block" data-permission="backup_manage">
+      <h3>Datensicherung</h3>
+      <p class="hint">Beim Start wird einmal täglich eine Sicherung erstellt und 30 Tage aufbewahrt. Vor jeder Wiederherstellung entsteht zusätzlich eine Sicherheitssicherung.</p>
+      <div class="actions"><button type="button" onclick="downloadDatabaseBackup()">Datenbank sichern</button><button type="button" class="danger" onclick="chooseDatabaseRestore()">Sicherung wiederherstellen</button></div>
+      <input id="databaseRestoreFile" type="file" accept=".db,application/vnd.sqlite3" hidden onchange="prepareDatabaseRestore(this)">
+    </section>
+    <section class="settings-block" data-permission="templates_export_all">
+      <h3>Alle Mail-Vorlagen exportieren</h3>
+      <p class="hint">Der JSON-Export enthält die strukturierten Vorlagendaten. Der EML-Export lädt ein ZIP-Archiv mit einer editierbaren EML-Datei pro zugänglicher Vorlage herunter.</p>
+      <div class="actions"><button type="button" onclick="exportAllTemplates('json')">Alle als JSON</button><button type="button" onclick="exportAllTemplates('eml')">Alle als EML (ZIP)</button></div>
+    </section>
+  </div>
+</section>
+
+<section id="tab-audit" class="tab">
+  <div class="card">
+    <div class="section-head"><div><h2>Änderungsprotokoll</h2><p class="muted">Administrative Änderungen ohne Passwörter, Wiederherstellungscodes oder E-Mail-Inhalte.</p></div><button onclick="loadAuditLog()">Aktualisieren</button></div>
+    <div id="auditList"></div>
+  </div>
+</section>
+
+<section id="tab-usage" class="tab">
+  <div class="card">
+    <div class="section-head"><div><h2>Nutzungsauswertung</h2><p class="muted">Erfasst werden Vorlage, Benutzer, Projekt-ID, Zeitpunkt und Ausgabeart – niemals Empfänger, Betreff oder E-Mail-Inhalt.</p></div><div class="actions compact"><label>Zeitraum<select id="usageDays" onchange="loadUsageReport()"><option value="7">7 Tage</option><option value="30" selected>30 Tage</option><option value="90">90 Tage</option><option value="365">365 Tage</option></select></label><button onclick="loadUsageReport()">Aktualisieren</button></div></div>
+    <div id="usageSummary" class="status-grid"></div>
+    <div class="grid three report-grid"><section><h3>Vorlagen</h3><div id="usageByTemplate"></div></section><section><h3>Ausgabearten</h3><div id="usageByMethod"></div></section><section><h3>Benutzer</h3><div id="usageByUser"></div></section></div>
+    <h3>Letzte Ausgaben</h3><div id="usageRecent"></div>
+  </div>
+</section>
+
+<section id="tab-system-status" class="tab">
+  <div class="card">
+    <div class="section-head"><div><h2>Systemstatus</h2><p class="muted">Technischer Überblick ohne vertrauliche Inhalte oder Dateipfade.</p></div><button onclick="loadSystemStatus()">Aktualisieren</button></div>
+    <div id="systemStatusGrid" class="status-grid"></div>
+  </div>
+</section>
+
+<section id="tab-help" class="tab">
+  <div class="card help-content api-doc">
+    <h2>Projekt-API</h2>
+    <p>Die API legt neue Projekte einschließlich Kontakten an. Für vorhandene Projekt-IDs (auch archivierte) wird 409 zurückgegeben; bestehende Projekte werden nicht verändert.</p>
+    <ol><li>Unter Benutzerverwaltung → Rollen die Berechtigung „Projekte über API anlegen / persönliche API-Schlüssel“ vergeben.</li><li>Unter „Mein Konto“ einen persönlichen API-Schlüssel erzeugen. Administratoren mit Benutzerverwaltungsrecht können dort auch einen Benutzer auswählen.</li><li>Schlüssel einmalig kopieren und im aufrufenden Programm sicher hinterlegen. Erneuern ersetzt den bisherigen Schlüssel; „Sperren“ deaktiviert ihn sofort.</li></ol>
+    <p>Für Excel ist keine Browseranmeldung während der Übertragung erforderlich. Deaktivierte Konten und entzogene API-Berechtigungen sperren den API-Zugriff. Ein erforderlicher Passwortwechsel muss zuvor durchgeführt werden.</p>
+    <pre>POST /api/integration/projects
+Authorization: Bearer wve_IHR_SCHLUESSEL
+Content-Type: application/json
+
+{
+  "schema_version": "1.0",
+  "projekt": {"id": "2026-041", "bezeichnung": "HLF 20 Musterstadt", "fahrzeugtyp": "HLF 20", "phase": "3"},
+  "auftraggeber": {"name": "Stadt Musterstadt"},
+  "kontakte": [{"id": "kontakt-1", "vorname": "Anna", "nachname": "Muster", "email": "anna@example.org"}]
+}</pre>
+    <p>Pflichtfelder: schema_version = „1.0“, projekt.id (Text, bis 200 Zeichen), projekt.bezeichnung (Text, bis 1.000 Zeichen). Auftraggeber ist ein optionales Objekt, kontakte eine optionale Liste mit bis zu 100 Objekten und Textwerten. Zusätzliche Projektfelder werden mitgespeichert. Zeichencodierung: UTF-8. Maximal 256.000 Bytes je Anfrage, 60 Anfragen je Minute und Schlüssel; zusätzlich 300 je Minute und Verbindungsadresse.</p>
+    <pre>201 Created
+{"ok": true, "id": 42, "project_key": "2026-041"}</pre>
+    <p>Fehler enthalten {"error":"Beschreibung"}: 400 ungültige Daten · 401 ungültiger/gesperrter Schlüssel · 403 fehlende Berechtigung · 409 Projekt-ID vorhanden · 413 Anfrage zu groß · 415 falscher Content-Type · 429 zu viele Anfragen (Retry-After: 60 Sekunden). Nach einem Verbindungsabbruch kann ein erneuter Aufruf 409 liefern, wenn das Projekt bereits gespeichert wurde.</p>
+    <p>Beispiel mit curl (Projektdatei project.json):</p>
+    <pre>curl --request POST "https://IHRE-APP/api/integration/projects" --header "Authorization: Bearer IHR_SCHLUESSEL" --header "Content-Type: application/json" --data-binary "@project.json"</pre>
+    <p>Außerhalb des lokalen Rechners HTTPS verwenden. Schlüssel gehören in den Authorization-Header, niemals in URLs oder gemeinsam verteilte Excel-Dateien. Bei vorgeschaltetem Cloudflare Access benötigt der aufrufende Dienst zusätzlich eine dort zugelassene Dienstauthentifizierung; ein API-Schlüssel umgeht Cloudflare nicht.</p>
+    <p>Ein VBA-Beispiel liegt im Programmordner unter <code>excel/ProjektAPI.bas</code>. Es liest fertiges JSON aus dem benannten Excel-Bereich <code>Projekt_JSON</code> und verwendet die Windows-Umgebungsvariablen <code>WVE_API_URL</code> und <code>WVE_API_KEY</code>. URL enthält den vollständigen Endpunkt. Excel nach Änderungen an Umgebungsvariablen neu starten.</p>
+  </div>
+  <div class="card help-content">
+    <h2>Hilfe zur Vorlagen-Engine</h2>
+    <details open><summary>E-Mail erstellen</summary><p>Wählen Sie eine Vorlage und optional ein gespeichertes Projekt. Ergänzen Sie die angezeigten Platzhalter, erzeugen Sie das Ergebnis und prüfen Sie Empfänger, Betreff und Text. Für den Erhalt von Formatierungen ist der EML-Export die bevorzugte Ausgabe.</p></details>
+    <details><summary>Bilder in E-Mails</summary><p>Im Vorlageneditor oder Ergebnis „Bild“ wählen und eine PNG/JPG-Datei hochladen. Bildbeschreibung und Breite einstellen; die Höhe passt sich automatisch an. Zum Bearbeiten oder Entfernen ein eingefügtes Bild anklicken. Upload: maximal 8 MB / 20 Millionen Pixel. Automatische Verkleinerung auf maximal 1600 Pixel / 2 MB; pro E-Mail höchstens 10 Bilder mit zusammen 4 MB. Bilder bleiben in gespeicherten Vorlagen, Projekt-Mails, Sicherungen und EML-Exporten enthalten. Mailto und Kopieren übernehmen nach Bestätigung nur Text mit Bildbeschreibungen, keine Bilder.</p></details>
+    <details><summary>Projekte und Kontakte</summary><p>Projekte können über das Formular, eine JSON-Datei oder den Excel-Direktimport angelegt werden. Vor dem Import zeigt die Anwendung alle neuen und geänderten Werte. Kontakte werden projektbezogen in der Projektübersicht gepflegt.</p></details>
+    <details><summary>Projektphasen und gespeicherte E-Mails</summary><p>Die Projektseite gliedert Fachinhalte in sechs Projektphasen. E-Mails, die mit einem gespeicherten Projekt erzeugt wurden, können als Momentaufnahme im Projekt abgelegt, später eingesehen und erneut im E-Mail-Editor geöffnet werden.</p></details>
+    <details><summary>Bieterfragen</summary><p>Projektbezogene Bieterfragen können einzeln, in der Batch-Erfassung oder gesammelt aus Excel übernommen werden. Durchsuchbare Dialoge wählen Projekte, Fragenkategorien, Themen und Standardantworten aus. Eine fertige Antwort trägt zunächst den Status „Antwort erstellt“ und gilt erst nach ausdrücklicher Quittierung als „beantwortet“. Projektbezogene Fragen erscheinen zusätzlich in Phase 3 – Ausschreibung.</p></details>
+    <details><summary>Excel-Batchvorlage für Bieterfragen</summary><p>Unter Excel-Import die aktuelle Vorlage herunterladen. Kategorie, Thema und Fragetext sind erforderlich; die Dropdowns entsprechen dem Stand beim Download. Bei einem Kategorienwechsel das Thema erneut wählen. In der Anwendung Projekt und Jahr festlegen, XLSX hochladen und die Vorschau prüfen. Fehler verhindern den gesamten Import. Identische Fragen im gleichen Projekt und Jahr werden übersprungen; geänderte Texte werden als neue Fragen angelegt. Mehrzeilige Inhalte bleiben erhalten. Maximal 500 Zeilen und 10 MB pro Datei.</p></details>
+    <details><summary>Dokumentvorlagen und Dateiversionen</summary><p>Das Layout wird direkt in Word gepflegt. Auf der separaten Bearbeitungsseite eine DOCX-Datei hochladen, die Platzhalterhinweise prüfen und speichern. „Mit Vorlage testen“ öffnet die Dokumenterstellung mit der Vorlage. Hier können Projekt und Kontakt ausgewählt oder alle Angaben manuell ergänzt werden. „Eingaben und Vorlage prüfen“ führt eine Testgenerierung aus, ohne eine Datei zu speichern. PDF benötigt LibreOffice auf dem Server.</p><p>Eine neue hochgeladene Word-Datei erzeugt eine weitere Dateiversion; ältere Originale bleiben herunterladbar. Zum Wiederherstellen eine ältere Datei herunterladen und erneut hochladen. Textbausteine gelten immer in ihrem aktuellen Stand. „Im Projekt speichern“ legt dagegen eine unveränderliche fertige Datei auf der Projektseite ab.</p></details>
+    <details><summary>Vorlagen und Platzhalter</summary><p>Vorlagen verwenden Platzhalter in doppelten geschweiften Klammern, zum Beispiel <code>{{projekt.bezeichnung}}</code>. Die Prüfung im Vorlageneditor weist auf unbekannte, inaktive oder ungenutzte Platzhalter sowie weitere Auffälligkeiten hin, blockiert das Speichern aber nicht.</p></details>
+    <details><summary>Exporte</summary><p>Eine einzelne Vorlage kann als JSON oder EML exportiert werden. In den Einstellungen können berechtigte Benutzer alle für sie zugänglichen Vorlagen als JSON oder als ZIP mit EML-Dateien herunterladen.</p></details>
+    <details><summary>Archiv und Löschschutz</summary><p>Projekte und E-Mail-Vorlagen werden beim Löschen zunächst archiviert und können wiederhergestellt werden. Eine endgültige Löschung ist erst aus dem Archiv und nur mit administrativer Berechtigung möglich. Bei Dokumentvorlagen entfernt die bestätigte Löschung auch deren Dateiversionen; bereits in Projekten gespeicherte Dokumente bleiben erhalten.</p></details>
+    <details><summary>Datensicherung</summary><p>Die Anwendung legt täglich eine SQLite-Sicherung an. Administratoren können Sicherungen zusätzlich herunterladen oder wiederherstellen. Produktive Sicherungen müssen regelmäßig auf ein anderes, geschütztes System kopiert werden.</p></details>
+    <details><summary>Anmeldung und Cloudflare</summary><p>Bei externer Veröffentlichung prüft Cloudflare Access zuerst den externen Zugang. Anschließend erfolgt weiterhin die persönliche Anmeldung an der Vorlagen-Engine. Beide Schutzschichten bleiben voneinander unabhängig.</p></details>
+  </div>
+</section>
+
+<section id="tab-account" class="tab">
+  <div class="card narrow">
+    <h2>Passwort ändern</h2>
+    <label>Bisheriges Passwort<input id="oldPassword" type="password"></label>
+    <label>Neues Passwort<input id="newPassword" type="password"></label>
+    <label>Neues Passwort wiederholen<input id="newPassword2" type="password"></label>
+    <button class="primary" onclick="changePassword()">Passwort ändern</button>
+    <p class="hint">Mindestens 10 Zeichen, Groß- und Kleinbuchstabe sowie eine Zahl.</p>
+  </div>
+  <div id="projectApiKeyPanel" class="card" hidden>
+    <h2>Projekt-API-Schlüssel</h2><p>Ein persönlicher Schlüssel erlaubt ausschließlich das Anlegen von Projekten. Er wird nur einmal angezeigt. Beim Erneuern wird der bisherige Schlüssel ungültig.</p>
+    <label>Benutzer<select id="projectApiUser"></select></label>
+    <button id="createProjectApiKey" onclick="confirmProjectApiKey('create')">Schlüssel erstellen / erneuern</button>
+    <div id="projectApiKeyList"></div>
+  </div>
+</section>
+</main>
+</div>
+</section>
+
+<dialog id="recoveryDialog"><form method="dialog" onsubmit="return false">
+  <h2>Passwort zurücksetzen</h2>
+  <label>Benutzername<input id="recUsername"></label>
+  <label>Wiederherstellungscode<input id="recCode"></label>
+  <label>Neues Passwort<input id="recPassword" type="password"></label>
+  <div class="actions"><button class="primary" onclick="recoverPassword()">Zurücksetzen</button><button onclick="this.closest('dialog').close()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="secretDialog"><form method="dialog">
+  <h2 id="secretTitle">Zugangsdaten</h2><pre id="secretText"></pre>
+  <p class="warning">Diese Angaben werden nur einmal im Klartext angezeigt. Bitte sicher übergeben beziehungsweise aufbewahren.</p>
+  <button class="primary">Schließen</button>
+</form></dialog>
+
+<dialog id="credentialDialog" class="credential-dialog"><form method="dialog" onsubmit="return false">
+  <h2>Neue Zugangsdaten</h2>
+  <p class="warning">Diese Angaben werden nur jetzt vollständig angezeigt. Bitte sicher an den Benutzer übergeben.</p>
+  <div class="credential-row"><label>Benutzername<input id="credentialUsername" readonly></label><button type="button" class="icon-button" title="Benutzername kopieren" aria-label="Benutzername kopieren" onclick="copyCredential('credentialUsername')">⧉</button></div>
+  <div class="credential-row"><label>Passwort<input id="credentialPassword" readonly></label><button type="button" class="icon-button" title="Passwort kopieren" aria-label="Passwort kopieren" onclick="copyCredential('credentialPassword')">⧉</button></div>
+  <div class="credential-row"><label>Wiederherstellungscode<input id="credentialRecovery" readonly></label><button type="button" class="icon-button" title="Wiederherstellungscode kopieren" aria-label="Wiederherstellungscode kopieren" onclick="copyCredential('credentialRecovery')">⧉</button></div>
+  <div class="actions"><button type="button" class="primary" onclick="copyAllCredentials()">Alle Zugangsdaten kopieren</button><button type="button" onclick="credentialDialog.close()">Schließen</button></div>
+</form></dialog>
+
+<dialog id="forcedPasswordDialog" class="credential-dialog"><form method="dialog" onsubmit="return false">
+  <h2>Passwort ändern</h2>
+  <p class="warning">Für dieses Konto ist vor der weiteren Nutzung ein Passwortwechsel erforderlich.</p>
+  <label>Temporäres Passwort<input id="forcedOldPassword" type="password" autocomplete="current-password"></label>
+  <label>Neues Passwort<input id="forcedNewPassword" type="password" autocomplete="new-password"></label>
+  <label>Neues Passwort wiederholen<input id="forcedNewPassword2" type="password" autocomplete="new-password"></label>
+  <button type="button" class="primary" onclick="completeForcedPasswordChange()">Passwort ändern und fortfahren</button>
+</form></dialog>
+
+<dialog id="adminPasswordDialog"><form method="dialog" onsubmit="return false">
+  <h2>Benutzerpasswort festlegen</h2>
+  <input type="hidden" id="adminPasswordUserId">
+  <p id="adminPasswordUserLabel" class="muted"></p>
+  <label>Neues Passwort<input id="adminPasswordValue" type="password"></label>
+  <label>Neues Passwort wiederholen<input id="adminPasswordValue2" type="password"></label>
+  <div class="actions"><button class="primary" onclick="saveAdminPassword()">Passwort speichern</button><button onclick="this.closest('dialog').close()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="recoveryCodeConfirmDialog"><form method="dialog" onsubmit="return false">
+  <div class="notice-dialog-icon" aria-hidden="true">!</div><h2>Neuen Wiederherstellungscode erzeugen?</h2>
+  <p>Der bisherige Wiederherstellungscode wird dadurch sofort ungültig.</p>
+  <div class="actions"><button class="primary" type="button" onclick="confirmRecoveryCodeGeneration()">Neuen Code erzeugen</button><button type="button" onclick="cancelRecoveryCodeGeneration()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="linkEditorDialog"><form method="dialog" onsubmit="return false">
+  <h2>Link bearbeiten</h2>
+  <label>Linktext<input id="linkEditorText"></label>
+  <label>Linkadresse oder E-Mail-Adresse<input id="linkEditorUrl" placeholder="https://example.de"></label>
+  <div class="actions"><button class="primary" type="button" onclick="saveEditorLink()">Übernehmen</button><button id="removeEditorLinkButton" class="danger" type="button" onclick="removeEditorLink()">Link entfernen</button><button type="button" onclick="cancelEditorLink()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="noticeRequiredDialog"><form method="dialog">
+  <div class="notice-dialog-icon" aria-hidden="true">!</div><h2>Hinweistext noch nicht bestätigt</h2>
+  <p>Bitte klicken Sie zuerst auf „Hinweistext gesehen“.</p>
+  <button class="primary">Verstanden</button>
+</form></dialog>
+
+<dialog id="projectEditDialog" class="wide-dialog"><form method="dialog" onsubmit="return false">
+  <h2>Projektdaten bearbeiten</h2><input type="hidden" id="projectEditId">
+  <div id="projectEditConflict" class="placeholder-warning" hidden><div class="warning-icon" aria-hidden="true">!</div><div><strong>Projekt-ID bereits vergeben</strong><br><span></span></div></div>
+  <div id="projectEditFields" class="form-grid"></div>
+  <div class="actions"><button class="primary" onclick="saveEditedProject()">Projekt speichern</button><button onclick="this.closest('dialog').close()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="projectPickerDialog" class="project-picker-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2>Projekt auswählen</h2><p class="muted">Die Suche findet auch Wortteile innerhalb der Projektbezeichnung.</p></div><button onclick="this.closest('dialog').close()">Schließen</button></div>
+  <label>Projekt suchen<input id="projectPickerSearch" type="search" placeholder="Projektnummer oder Projektbezeichnung" oninput="renderProjectPickerResults()" autocomplete="off"></label>
+  <div id="projectPickerResults" class="project-picker-results"></div>
+</form></dialog>
+
+<dialog id="templatePickerDialog" class="project-picker-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2>E-Mail-Vorlage auswählen</h2><p class="muted">Die Suche findet auch Wortteile in Kategorie und Vorlagenname.</p></div><button onclick="this.closest('dialog').close()">Schließen</button></div>
+  <label>Vorlage suchen<input id="templatePickerSearch" type="search" placeholder="Kategorie oder Vorlagenname" oninput="renderTemplatePickerResults()" autocomplete="off"></label>
+  <div id="templatePickerResults" class="project-picker-results"></div>
+</form></dialog>
+
+<dialog id="dashboardTemplateDialog" class="project-picker-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2>Vorlage suchen</h2><p class="muted">Vorlage direkt zur E-Mail-Erstellung öffnen oder – mit Berechtigung – bearbeiten.</p></div><button type="button" onclick="closeDashboardTemplateSearch()">Schließen</button></div>
+  <label>Vorlage suchen<input id="dashboardTemplateDialogSearch" type="search" placeholder="Kategorie oder Vorlagenname" oninput="renderDashboardTemplateSearchResults()" autocomplete="off"></label>
+  <div id="dashboardTemplateSearchResults" class="project-picker-results dashboard-template-results"></div>
+</form></dialog>
+
+<dialog id="templateTestDialog" class="wide-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2>Vorlage testen</h2><p class="muted">Die aktuelle, noch nicht gespeicherte Fassung wird nur in dieser Vorschau verwendet.</p></div><button type="button" onclick="templateTestDialog.close()">Schließen</button></div>
+  <div class="template-test-layout">
+    <div><h3>Testwerte</h3><div id="templateTestFields" class="form-grid single"></div></div>
+    <div><h3>Vorschau</h3><label>Betreff<input id="templateTestSubject" readonly></label><label>Text</label><div id="templateTestBody" class="editor-surface preview-surface"></div>
+      <div id="templateTestNotice" class="template-notice" hidden><div class="notice-icon" aria-hidden="true">!</div><div><strong>Hinweis</strong><div id="templateTestNoticeText"></div></div></div>
+      <p id="templateTestNoticeMode" class="hint"></p>
+    </div>
+  </div>
+</form></dialog>
+
+<dialog id="contactDialog" class="wide-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2>Kontakte bearbeiten</h2><p id="contactDialogProject" class="muted"></p></div><button onclick="this.closest('dialog').close()">Schließen</button></div>
+  <div class="contact-layout"><div><h3>Vorhandene Kontakte</h3><div id="contactList"></div><button type="button" onclick="newContact()">Kontakt hinzufügen</button></div><div><h3 id="contactEditorTitle">Kontakt hinzufügen</h3><div id="contactEditFields" class="form-grid single"></div><div class="actions"><button class="primary" type="button" onclick="saveContact()">Kontakt speichern</button><button class="danger" id="deleteContactButton" type="button" onclick="deleteContact()" hidden>Kontakt löschen</button></div></div></div>
+  <div class="contact-quick-import"><h3>Kontakte schnell importieren</h3><p class="hint">Eine Zeile pro Kontakt in dieser Reihenfolge: Rolle; Anrede; Vorname; Nachname; E-Mail; Telefon. Tabellenzeilen aus Excel können direkt eingefügt werden.</p><textarea id="contactQuickImport" rows="7" placeholder="Projektleitung;Herr;Max;Mustermann;max@example.de;01234 567890"></textarea><button type="button" class="primary" onclick="importContactRows()">Kontakte importieren</button></div>
+</form></dialog>
+
+<dialog id="noticeActionDialog"><form method="dialog" onsubmit="return false">
+  <div class="notice-dialog-icon" aria-hidden="true">!</div><h2>Achtung! Hinweistext beachten!</h2><div id="noticeActionText" class="notice-dialog-text"></div>
+  <div class="actions"><button class="primary" type="button" onclick="confirmNoticeAction()">Trotzdem fortfahren</button><button onclick="cancelNoticeAction()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="importPreviewDialog" class="wide-dialog"><form method="dialog" onsubmit="return false">
+  <h2>Projektimport prüfen</h2><p class="muted">Prüfen Sie die Änderungen, bevor der gespeicherte Projektstand ersetzt wird.</p>
+  <div id="importPreviewContent" class="change-preview"></div>
+  <div class="actions"><button type="button" class="primary" onclick="confirmProjectImport()">Import bestätigen</button><button type="button" onclick="cancelProjectImport()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="templateHistoryDialog" class="wide-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2>Versionshistorie</h2><p id="templateHistoryTitle" class="muted"></p></div><button type="button" onclick="templateHistoryDialog.close()">Schließen</button></div>
+  <div id="templateHistoryList"></div>
+</form></dialog>
+
+<dialog id="restoreConfirmDialog"><form method="dialog" onsubmit="return false">
+  <div class="notice-dialog-icon" aria-hidden="true">!</div><h2>Datenbank wiederherstellen?</h2>
+  <p>Der aktuelle Datenbestand wird ersetzt. Zuvor erstellt die Anwendung automatisch eine Sicherheitssicherung. Anschließend müssen sich alle Benutzer neu anmelden.</p>
+  <div class="actions"><button type="button" class="danger" onclick="confirmDatabaseRestore()">Jetzt wiederherstellen</button><button type="button" onclick="cancelDatabaseRestore()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="archiveTemplateDialog"><form method="dialog" onsubmit="return false">
+  <div class="danger-dialog-icon" aria-hidden="true">!</div>
+  <h2>Vorlage archivieren?</h2>
+  <p><strong id="archiveTemplateName"></strong> wird aus der normalen Vorlagenansicht entfernt. Die Vorlage kann später über die Archivansicht wiederhergestellt werden.</p>
+  <div class="actions"><button type="button" class="danger danger-solid" onclick="confirmArchiveTemplate()">Vorlage archivieren</button><button type="button" onclick="cancelArchiveTemplate()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="quicklinkDialog" class="wide-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2>Quicklinks verwalten</h2><p class="muted">Persönliche Verknüpfungen zu häufig verwendeten Webseiten.</p></div><button type="button" onclick="quicklinkDialog.close()">Schließen</button></div>
+  <div class="quicklink-form"><label>Art<select id="quicklinkType" onchange="toggleQuicklinkType()"><option value="external">Weblink</option><option value="internal">Interne Seite</option></select></label><label>Bezeichnung<input id="quicklinkTitle" maxlength="100" placeholder="Zum Beispiel Zenkit"></label><label id="quicklinkUrlWrap">Webadresse<input id="quicklinkUrl" type="url" placeholder="https://…"></label><label id="quicklinkTargetWrap" hidden>Interne Seite<select id="quicklinkTarget"></select></label><button type="button" class="primary" onclick="addQuicklink()">Quicklink hinzufügen</button></div>
+  <div id="quicklinkList" class="quicklink-admin-list"></div>
+</form></dialog>
+
+<dialog id="archiveProjectDialog"><form method="dialog" onsubmit="return false">
+  <div class="danger-dialog-icon" aria-hidden="true">!</div><h2>Projekt archivieren?</h2>
+  <p><strong id="archiveProjectName"></strong> wird aus der normalen Projektübersicht entfernt und kann später wiederhergestellt werden.</p>
+  <div class="actions"><button type="button" class="danger danger-solid" onclick="confirmArchiveProject()">Projekt archivieren</button><button type="button" onclick="cancelArchiveProject()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="permanentDeleteDialog"><form method="dialog" onsubmit="return false">
+  <div class="danger-dialog-icon" aria-hidden="true">!</div><h2 id="permanentDeleteTitle">Endgültig löschen?</h2><p id="permanentDeleteText"></p>
+  <div class="actions"><button type="button" class="danger danger-solid" onclick="confirmPermanentDelete()">Endgültig löschen</button><button type="button" onclick="cancelPermanentDelete()">Abbrechen</button></div>
+</form></dialog>
+
+<dialog id="projectEmailDialog" class="wide-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2 id="projectEmailDialogSubject">Gespeicherte E-Mail</h2><p id="projectEmailDialogMeta" class="muted"></p></div><button onclick="this.closest('dialog').close()">Schließen</button></div>
+  <div class="saved-mail-addresses"><p><b>An:</b> <span id="projectEmailDialogTo"></span></p><p><b>CC:</b> <span id="projectEmailDialogCc"></span></p></div>
+  <div id="projectEmailDialogBody" class="saved-mail-body"></div>
+  <div class="actions"><button id="openSavedEmailEditorButton" type="button" class="primary" onclick="openSavedEmailInEditor()">Im E-Mail-Editor öffnen</button></div>
+</form></dialog>
+
+<dialog id="bidQuestionDialog" class="wide-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2 id="bidQuestionDialogTitle">Bieterfrage</h2><p id="bidQuestionDialogMeta" class="muted"></p></div><button onclick="this.closest('dialog').close()">Schließen</button></div>
+  <div id="bidQuestionDialogContent" class="bid-question-detail"></div>
+  <div id="bidQuestionDialogActions" class="actions"></div>
+</form></dialog>
+
+<dialog id="bidProjectPickerDialog" class="project-picker-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2>Projekt auswählen</h2><p class="muted">Die Suche findet Projektnummern und beliebige Teile der Projektbezeichnung.</p></div><button type="button" onclick="bidProjectPickerDialog.close()">Schließen</button></div>
+  <label>Projekt suchen<input id="bidProjectPickerSearch" type="search" placeholder="Projektnummer oder Projektbezeichnung" oninput="renderBidProjectPickerResults()" autocomplete="off"></label>
+  <div id="bidProjectPickerResults" class="project-picker-results"></div>
+</form></dialog>
+
+<dialog id="bidTaxonomyPickerDialog" class="project-picker-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2 id="bidTaxonomyPickerTitle">Auswahl</h2><p id="bidTaxonomyPickerHint" class="muted"></p></div><button type="button" onclick="bidTaxonomyPickerDialog.close()">Schließen</button></div>
+  <label>Suchen<input id="bidTaxonomyPickerSearch" type="search" placeholder="Bezeichnung durchsuchen" oninput="renderBidTaxonomyPickerResults()" autocomplete="off"></label>
+  <div id="bidTaxonomyPickerResults" class="project-picker-results"></div>
+  <section class="picker-create-panel"><h3 id="bidTaxonomyCreateTitle">Neu anlegen</h3><label id="bidTaxonomyCreateCategoryWrap" hidden>Kategorie<select id="bidTaxonomyCreateCategory"></select></label><label>Bezeichnung<input id="bidTaxonomyCreateName" maxlength="300" onkeydown="if(event.key==='Enter'){event.preventDefault();createFromBidTaxonomyPicker()}"></label><button type="button" class="primary" onclick="createFromBidTaxonomyPicker()">Anlegen und auswählen</button></section>
+</form></dialog>
+
+<dialog id="bidderPickerDialog" class="project-picker-dialog"><form method="dialog" onsubmit="return false"><div class="section-head"><div><h2>Bieter auswählen</h2><p class="muted">Suchen oder direkt einen neuen Bieter anlegen.</p></div><button type="button" onclick="bidderPickerDialog.close()">Schließen</button></div><label>Bieter suchen<input id="bidderPickerSearch" type="search" placeholder="Bieter oder Firma" oninput="renderBidderPickerResults()"></label><details class="quick-create"><summary>Neuen Bieter schnell anlegen</summary><div class="grid two compact-grid"><label>Bieter *<input id="quickBidderName" onkeydown="if(event.key==='Enter'){event.preventDefault();createQuickBidder()}"></label><label>Firmenname<input id="quickBidderCompany" onkeydown="if(event.key==='Enter'){event.preventDefault();createQuickBidder()}"></label></div><button type="button" class="primary" onclick="createQuickBidder()">Bieter anlegen und auswählen</button></details><div id="bidderPickerResults" class="project-picker-results"></div></form></dialog>
+
+<dialog id="bidAnswerDetailDialog" class="wide-dialog"><div class="section-head"><h2 id="bidAnswerDetailTitle">Standardantwort</h2><button onclick="bidAnswerDetailDialog.close()">Schließen</button></div><div id="bidAnswerDetailContent"></div><div id="bidAnswerDetailActions" class="actions"></div></dialog>
+
+<dialog id="standardAnswerPickerDialog" class="wide-dialog"><form method="dialog" onsubmit="return false">
+  <div class="section-head"><div><h2>Standardantwort auswählen</h2><p class="muted">Suchen Sie in Kurzfrage, Frage und Antwort. Die Auswahl wird vollständig in das Antwortfeld übernommen.</p></div><button type="button" onclick="standardAnswerPickerDialog.close()">Schließen</button></div>
+  <label>Standardantwort suchen<input id="standardAnswerPickerSearch" type="search" placeholder="Thema, Frage oder Antwort" oninput="renderStandardAnswerPickerResults()"></label>
+  <div id="standardAnswerPickerResults" class="standard-answer-picker-results"></div>
+</form></dialog>
+
+<dialog id="documentPickerDialog" class="project-picker-dialog">
+  <div class="section-head"><h2 id="documentPickerTitle">Auswählen</h2><button onclick="byId('documentPickerDialog').close()">Schließen</button></div>
+  <label>Suchen<input id="documentPickerSearch" type="search" oninput="renderDocumentPickerResults()" autocomplete="off"></label>
+  <div id="documentPickerResults" class="project-picker-results"></div>
+</dialog>
+<dialog id="deleteDocumentTemplateDialog">
+  <h2>Dokumentvorlage löschen?</h2><p>Das Original und seine Dateiversionen werden endgültig gelöscht. Bereits im Projekt gespeicherte Dokumente bleiben erhalten.</p>
+  <div class="actions"><button onclick="byId('deleteDocumentTemplateDialog').close()">Abbrechen</button><button class="danger" onclick="deleteDocumentTemplate()">Endgültig löschen</button></div>
+</dialog>
+<script src="/static/ui-shell.js"></script>
+<dialog id="emailImageDialog" aria-labelledby="emailImageTitle" oncancel="imageUploadRevision++">
+  <h2 id="emailImageTitle">Bild einfügen oder bearbeiten</h2>
+  <p class="hint">PNG/JPG bis 8 MB und 20 Millionen Pixel. Bilder werden automatisch auf höchstens 1600 Pixel und 2 MB verkleinert. Maximal 10 Bilder / 4 MB pro E-Mail.</p>
+  <label>Bilddatei<input id="emailImageFile" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg" onchange="uploadEmailImage()"></label>
+  <img id="emailImagePreview" class="email-image-preview" alt="Vorschau des ausgewählten Bildes" hidden>
+  <label>Bildbeschreibung (Alternativtext)<input id="emailImageAlt" maxlength="300"></label>
+  <label>Anzeigebreite in Pixeln<input id="emailImageWidth" type="number" min="1" max="1600" step="1"></label>
+  <p class="hint">Das Seitenverhältnis bleibt erhalten. Keine Vergrößerung über die Originalbreite.</p>
+  <p id="emailImageError" class="image-error" role="status" aria-live="polite"></p>
+  <div class="actions"><button onclick="cancelEmailImage()">Abbrechen</button><button id="removeEmailImageButton" class="danger" onclick="removeEmailImage()" hidden>Bild entfernen</button><button id="saveEmailImageButton" class="primary" onclick="saveEmailImage()" disabled>Bild übernehmen</button></div>
+</dialog>
+<dialog id="imageExportDialog" aria-labelledby="imageExportTitle">
+  <h2 id="imageExportTitle">Bilder werden nicht übernommen</h2>
+  <p>Diese E-Mail enthält Bilder. Über Outlook/Mailto und „Text kopieren“ wird in diesem Fall nur unformatierter Text mit Bildbeschreibungen übernommen. Für Bilder und Formatierung bitte die EML-Datei verwenden.</p>
+  <div class="actions"><button onclick="byId('imageExportDialog').close()">Abbrechen</button><button onclick="confirmImageTextExport()">Nur Text übernehmen</button></div>
+</dialog>
+<script src="/static/email-images.js"></script>
+<dialog id="bidderViewDialog" aria-labelledby="bidderViewTitle"><h2 id="bidderViewTitle"></h2><pre id="bidderAddress"></pre><div class="actions"><button onclick="copyBidderAddress()">Anschrift kopieren</button><button onclick="byId('bidderViewDialog').close()">Schließen</button></div></dialog>
+<dialog id="apiKeyConfirmDialog"><h2>API-Schlüssel</h2><p id="apiKeyConfirmText"></p><div class="actions"><button onclick="byId('apiKeyConfirmDialog').close()">Abbrechen</button><button onclick="performProjectApiKeyAction()">Bestätigen</button></div></dialog>
+<dialog id="apiKeySecretDialog" onclose="byId('apiKeySecret').value=''" aria-labelledby="apiKeySecretTitle"><h2 id="apiKeySecretTitle">API-Schlüssel – einmalige Anzeige</h2><p>Benutzer: <b id="apiKeySecretUser"></b></p><p>Bitte jetzt sicher ablegen. Nach dem Schließen kann dieser Schlüssel nicht erneut angezeigt werden.</p><textarea id="apiKeySecret" readonly rows="3"></textarea><div class="actions"><button onclick="copyApiKey()">Schlüssel kopieren</button><button onclick="byId('apiKeySecretDialog').close()">Schließen</button></div></dialog>
+<script src="/static/project-api.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/documents.js"></script>
+<script src="/static/bid-workbooks.js"></script>
+</body>
+</html>

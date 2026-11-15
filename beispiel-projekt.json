@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "projekt": {
+    "id": "2026-041",
+    "bezeichnung": "HLF 20 Musterstadt",
+    "fahrzeugtyp": "HLF 20",
+    "status": "Auftragsabwicklung"
+  },
+  "auftraggeber": {
+    "name": "Stadt Musterstadt",
+    "strasse": "Musterstraße 1",
+    "plz": "12345",
+    "ort": "Musterstadt"
+  },
+  "kontakte": [
+    {
+      "id": "kontakt-001",
+      "rolle": "Projektleitung",
+      "anrede": "Herr Mustermann",
+      "vorname": "Max",
+      "nachname": "Mustermann",
+      "email": "max.mustermann@example.de",
+      "telefon": "01234 567890"
+    },
+    {
+      "id": "kontakt-002",
+      "rolle": "Feuerwehrkommandant",
+      "anrede": "Herr Beispiel",
+      "vorname": "Thomas",
+      "nachname": "Beispiel",
+      "email": "thomas.beispiel@example.de",
+      "telefon": "01234 111222"
+    }
+  ]
+}

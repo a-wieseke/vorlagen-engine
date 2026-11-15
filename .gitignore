@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+wieseke.db
+backups/
+.browser-test-data/
+.browser-test-data-*/
+.artifact-work/
+.ui-redesign-test/
+.testdeps/
+*.log
+release/
+outputs/
