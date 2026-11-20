@@ -164,7 +164,7 @@ class ExtensionsTest(unittest.TestCase):
         args={"template_id":ident,"project_id":project["id"],"contact_index":1}
         self.assertEqual(Document(io.BytesIO(self.generate_bytes(client,args))).paragraphs[0].text,"Berta")
         with self.assertRaises(urllib.error.HTTPError):self.generate_bytes(client,{**args,"contact_index":99})
-        self.json_request(client,f"/api/projects/{project['id']}","DELETE")
+        self.json_request(client,f"/api/projects/{project['id']}","DELETE",{"expected_revision":project["revision"]})
         with self.assertRaises(urllib.error.HTTPError):self.generate_bytes(client,{**args,"save_to_project":True})
 
     def test_migration_document_baselines_are_idempotent(self):

@@ -12,7 +12,7 @@ execFileSync(process.env.WVE_TEST_PYTHON||"python",["-c","from PIL import Image;
 const browser=await chromium.launch({channel:"chrome",headless:true});
 const context=await browser.newContext({viewport:{width:1440,height:1100},permissions:["clipboard-read","clipboard-write"]});
 const page=await context.newPage();page.setDefaultTimeout(15000);
-const errors=[];page.on("pageerror",e=>errors.push(e.message));page.on("dialog",()=>errors.push("Unexpected system dialog"));
+const errors=[];page.on("pageerror",e=>errors.push(e.message));page.on("dialog",d=>{if(d.type()==='beforeunload')d.accept();else{errors.push("Unexpected system dialog");d.dismiss()}});
 const unique=Date.now();
 async function api(url,method="GET",body){return page.evaluate(async({url,method,body})=>api(url,{method,body:body?JSON.stringify(body):undefined}),{url,method,body})}
 async function tab(name){await page.evaluate(name=>switchTab(name),name);await page.waitForTimeout(230)}
@@ -58,15 +58,17 @@ try{
   await api("/api/projects","POST",{data:{schema_version:"1.0",projekt:{id:`IMG-${unique}`,bezeichnung:"Bildprojekt"},kontakte:[]}});
   const project=(await api("/api/projects")).projects.find(p=>p.project_key===`IMG-${unique}`);
   await page.evaluate(async id=>{await loadProjects();useProject(id)},project.id);
-  await page.evaluate(id=>openTemplate(id,true),templateId);
+  // Keeping the current result on project change is deliberate in 4.0.
   await page.locator('#tab-generator button[onclick="generateEmail()"] ').click();
+  await page.locator('#actionConfirmation button').filter({hasText:'Bestätigen'}).click();
   await page.locator("#saveProjectEmailButton").click();
   await page.waitForFunction(()=>byId("toast").textContent.includes("Projekt gespeichert"));
   const workspace=await api(`/api/projects/${project.id}/workspace`);assert.match(workspace.emails[0].body_html,/data:image\/png/);
   await page.evaluate(id=>openProjectDetail(id),project.id);
+  await page.locator('.object-tabs button').filter({hasText:'E-Mails'}).click();
   await page.locator("#projectSavedEmails .project-email-record").first().click();
   assert.equal(await page.locator("#projectEmailDialogBody img").count(),1);
-  await page.evaluate(()=>openSavedEmailInEditor());
+  await page.evaluate(()=>{WveDrafts.clean(byId('tab-generator'));return openSavedEmailInEditor()});
   assert.equal(await page.locator("#resultBody img").count(),1);
   await api("/api/bidders","POST",{bidder:`Bild-Testbieter ${unique}`,company_name:"Muster GmbH",street:"Musterstraße 1",postal_code:"48143",city:"Münster",country:"Deutschland",website:"https://example.com",active:true});
   await page.evaluate(()=>loadBidders());await tab("bidders");
@@ -86,8 +88,8 @@ try{
   await page.setViewportSize({width:1440,height:1100});await tab("project-overview");
   await page.locator("#projectOverviewSearch").fill(`IMG-${unique}`);
   const actions=page.locator(".project-table-actions");assert.equal(await actions.locator("button").count(),4);assert.equal(await actions.locator("svg").count(),4);
-  await actions.getByRole("button",{name:"Projektdaten bearbeiten"}).click();await page.locator("#projectEditDialog").waitFor({state:"visible"});
-  await page.evaluate(()=>byId("projectEditDialog").close());
+  await actions.getByRole("button",{name:"Projektdaten bearbeiten"}).click();await page.locator("#tab-project-edit").waitFor({state:"visible"});
+  await tab('project-overview');
   await page.screenshot({path:path.join(artifacts,"project-icons.png"),fullPage:true});
   assert.deepEqual(errors,[]);console.log("Image editor, persistence, EML, warnings, bidder table/layout and project icons: PASS");
 }catch(error){console.error("Browser errors:",errors);await page.screenshot({path:path.join(artifacts,"failure.png"),fullPage:true});throw error}

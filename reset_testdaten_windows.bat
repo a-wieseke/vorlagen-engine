@@ -7,8 +7,6 @@ if exist wieseke.db del /f /q wieseke.db
 echo.
 echo Datenbank wurde geloescht.
 echo Danach start_windows.bat ausfuehren.
-echo Zugangsdaten:
-echo Benutzername: admin
-echo Passwort: Admin12345!
-echo Wiederherstellungscode: WIES-2026-TEST
+echo Beim naechsten Start wird ein Administrator lokal eingerichtet.
+echo Feste Testdaten gibt es ausschliesslich mit WVE_DEMO_MODE=1.
 pause

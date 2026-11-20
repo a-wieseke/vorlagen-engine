@@ -1,6 +1,6 @@
 @echo off
 cd /d "%~dp0"
-title Wieseke Vorlagen-Engine v3.4
+title Wieseke Vorlagen-Engine v4.0
 echo.
 echo Richte die lokale Python-Umgebung ein ...
 if not exist ".venv\Scripts\python.exe" (
@@ -21,7 +21,7 @@ if errorlevel 1 (
 )
 echo.
 echo Die Anwendung wird unter http://127.0.0.1:8877 geoeffnet.
-echo Standardzugang bei neuer Datenbank: admin / Admin12345!
+echo Bei einer neuen Datenbank folgt die lokale Administrator-Einrichtung.
 echo Dieses Fenster waehrend der Nutzung nicht schliessen.
 echo.
 ".venv\Scripts\python.exe" app.py

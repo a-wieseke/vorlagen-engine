@@ -17,7 +17,7 @@ const page=await browser.newPage({viewport:{width:1440,height:1100}});
 page.setDefaultTimeout(30000);
 const errors=[];
 page.on("pageerror",error=>errors.push(error.message));
-page.on("dialog",()=>{throw Error("Unexpected system dialog")});
+page.on("dialog",d=>{if(d.type()==='beforeunload')d.accept();else{errors.push('Unexpected system dialog');d.dismiss()}});
 const token=Date.now(),category=`Browser Kategorie ${token}`,name=`Browser Dokument ${token}`;
 async function api(url,method="GET",body){
   return page.evaluate(async ({url,method,body})=>{
@@ -93,6 +93,7 @@ try{
   await page.getByRole("button",{name:"Im Projekt speichern",exact:true}).click();
   assert.equal((await savedResponse).status(),201);
   await page.evaluate(id=>openProjectDetail(id),project.id);
+  await page.locator('.object-tabs button').filter({hasText:'Dokumente'}).click();
   await page.locator("#projectSavedDocuments a").waitFor();
   const saved=page.waitForEvent("download");await page.locator("#projectSavedDocuments a").click();
   await (await saved).saveAs(path.join(artifacts,"projekt-dokument.docx"));

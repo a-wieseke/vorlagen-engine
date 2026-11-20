@@ -1,4 +1,46 @@
-# Wieseke Vorlagen-Engine – Version 3.4
+# Wieseke Vorlagen-Engine – Version 4.0.1
+
+## Aktueller Stand: Arbeitsoberfläche 4.0.1
+
+Bitte zuerst `UPDATE.md` lesen. Für die technische Weiterentwicklung beschreibt
+`ARCHITECTURE.md` die Modulgrenzen, Routen, Entwürfe und Prüfbefehle.
+
+- Neue Bereiche **Arbeiten**, **Bibliotheken**, **Administration** mit einer gemeinsamen
+  Seitendefinition. 250-Pixel-Navigation, einklappbare Icon-Leiste, mobile Navigation.
+- Eigene Listen, Objektansichten und Bearbeitungsseiten mit stabilen URLs.
+- E-Mail-Arbeitsplatz: Ausgangsdaten links, breiter Ergebniseditor rechts.
+  „In E-Mail übernehmen“ regeneriert ausdrücklich; eigene Textänderungen werden geschützt.
+- Ungespeicherte Entwürfe bleiben beim Navigieren im Speicher des Tabs. „Entwurf verwerfen“
+  fragt nach. Neuladen/Schließen wird bei Änderungen gewarnt, speichert aber nichts automatisch.
+- Schema 13 übernimmt die vorhandene Menüordnung in drei Bereiche. Reihenfolge pro Bereich
+  unter Einstellungen per Ziehen oder Alt+Pfeiltasten ändern; Kategorien und Favoriten bleiben erhalten.
+- Backend-Fachrouten und native JavaScript-Module sind getrennt. Python-HTTP-Adapter,
+  SQLite, Projekt-JSON, Bearer-API und bestehende Direktlinks bleiben kompatibel.
+- Sicherungen unter Administration → System; Sammel-Exporte in der Vorlagenbibliothek.
+- Keine neue Versandfunktion. EML bleibt die bevorzugte Ausgabe; PDF nur bei vorhandenem Konverter.
+- Abnahme: 103 automatisierte Regressionstests einschließlich Browser-Verträgen,
+  180 responsive Seitenprüfungen, zusätzliche komplette Excel-/DOCX-/Bild-/API-Abläufe.
+  Native Outlook-/Word-/PDF-Darstellung bitte auf dem eigenen Arbeitsplatz abnehmen.
+
+Version 3.5 ist die getrennte Stabilisierungsauslieferung mit der bisherigen Oberfläche
+und Schema 12. Ein direkter Sprung von einem älteren Stand auf 4.0.1 ist möglich; zuerst
+an einer Datenbankkopie prüfen. **Keine Arbeitsdatenbank ist in einer ZIP enthalten.**
+
+## Änderungen der Stabilisierung 3.5
+
+Bitte zuerst `UPDATE.md` lesen. Die nachfolgenden alten Versionsabschnitte sind
+Historie: deren Standardpasswörter und Startanweisungen gelten nicht für neue Installationen.
+
+- Erster Start: Administrator lokal in der Konsole einrichten. Bestehende Konten
+  werden nicht geändert. Feste Testdaten nur mit explizitem `WVE_DEMO_MODE=1`.
+- Schema 12: Revisionsschutz für Projekte und Kontakte, Wiederherstellungssperren,
+  Migrationsprotokoll. Vor Upgrades wird eine konsistente Sicherung angelegt.
+- Zurückgesetzte Konten verlieren alte Sitzungen und API-Schlüssel.
+- Ungespeicherte Eingaben bleiben innerhalb der geöffneten App im Arbeitsspeicher.
+- Tägliche Backups werden auch bei dauerhaft laufendem Server stündlich geprüft.
+- Geprüft mit 100 Backendtests und Browserregression für Entwürfe, Projektwechsel
+  und voneinander unabhängiges Laden der Fachmodule.
+
 
 ## Neu in Version 3.4
 

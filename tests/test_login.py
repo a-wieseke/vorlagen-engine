@@ -3,6 +3,8 @@ import http.cookiejar
 import importlib.util
 import json
 import io
+import os
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -23,11 +25,30 @@ SPEC.loader.exec_module(app)
 
 class LoginEndToEndTest(unittest.TestCase):
     csrf_tokens = {}
+    browser_contracts = None
+
+    def assert_browser_contract(self, name):
+        """Run browser contracts once against this class's disposable database.
+
+        No assertions depend on function spelling or bundling anymore.
+        A missing browser/runtime is an explicit test failure, not a skipped QA.
+        """
+        cls = type(self)
+        if cls.browser_contracts is None:
+            result = subprocess.run(
+                ['node', str(ROOT/'tests/ui-contracts.mjs')], cwd=ROOT,
+                env={**os.environ, 'WVE_TEST_URL': self.base_url},
+                capture_output=True, text=True, encoding='utf-8', timeout=150,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            cls.browser_contracts = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(cls.browser_contracts.get(name), 'PASS', cls.browser_contracts)
     @classmethod
     def setUpClass(cls):
         cls.temp_dir = tempfile.TemporaryDirectory()
         app.DB_PATH = Path(cls.temp_dir.name) / "test.db"
         app.SESSIONS.clear()
+        app.DEMO_MODE = True  # Explicit, isolated fixture; never a production default.
         app.init_db()
         cls.server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         cls.base_url = f"http://127.0.0.1:{cls.server.server_address[1]}"
@@ -220,20 +241,7 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertEqual(public["settings"]["app_name"], "Test Vorlagen-Engine")
 
     def test_frontend_uses_percent_encoding_and_copies_only_body(self):
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        mailto_section = script.split("function openMailto()", 1)[1].split(
-            "function downloadEml()", 1
-        )[0]
-        copy_section = script.split("async function copyResult()", 1)[1].split(
-            "function newTemplate(", 1
-        )[0]
-        self.assertIn("mailtoEncode", mailto_section)
-        self.assertNotIn("URLSearchParams", mailto_section)
-        self.assertIn("getEditorHtml(resultBody)", copy_section)
-        self.assertIn('"text/html"', copy_section)
-        self.assertIn('"text/plain"', copy_section)
-        self.assertNotIn("resultTo.value", copy_section)
-        self.assertNotIn("resultSubject.value", copy_section)
+        self.assert_browser_contract("output")
 
     def test_custom_role_controls_permissions_and_category_access(self):
         admin, _ = self.authenticated_client()
@@ -249,7 +257,7 @@ class LoginEndToEndTest(unittest.TestCase):
         role_id = created_role["id"]
         created_user = self.json_request(admin, "/api/users", "POST", {
             "username": "rollen_test", "first_name": "Rollen", "last_name": "Test",
-            "email": "", "role_id": role_id,
+            "email": "", "role_id": role_id, "must_change": False,
         })
 
         role_client, _ = self.new_client()
@@ -290,13 +298,7 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertNotIn('id="jsonPaste"', overview)
 
     def test_template_fields_are_always_rendered_for_stored_projects(self):
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        section = script.split("function renderManualFields()", 1)[1].split(
-            "function renderText", 1
-        )[0]
-        self.assertIn('input.value=existing||""', section)
-        self.assertNotIn("mustEnter", section)
-        self.assertNotIn('definition.source==="user"', section)
+        self.assert_browser_contract("fields")
 
     def test_category_access_filters_templates_and_dashboard(self):
         admin, _ = self.authenticated_client()
@@ -314,7 +316,7 @@ class LoginEndToEndTest(unittest.TestCase):
         })
         user = self.json_request(admin, "/api/users", "POST", {
             "username": "kategorie_test", "first_name": "Kategorie",
-            "last_name": "Test", "email": "", "role_id": role["id"],
+            "last_name": "Test", "email": "", "role_id": role["id"], "must_change": False,
         })
         client, _ = self.new_client()
         form = urllib.parse.urlencode({
@@ -349,7 +351,7 @@ class LoginEndToEndTest(unittest.TestCase):
         changed["projekt"]["bezeichnung"] = "Nachher"
         changed["kontakte"][0]["email"] = "neu@example.de"
         self.json_request(client, "/api/projects", "POST", {"data": original})
-        self.json_request(client, "/api/projects", "POST", {"data": changed})
+        self.json_request(client, "/api/projects", "POST", {"data": changed, "expected_revision": 1})
         project = next(item for item in self.json_request(client, "/api/projects")["projects"]
                        if item["project_key"] == "EDIT-001")
         self.assertEqual(project["data"]["projekt"]["bezeichnung"], "Nachher")
@@ -393,16 +395,7 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertEqual(template_category_order, expected_template_order)
 
     def test_frontend_has_project_search_mode_buttons_and_three_column_dashboard(self):
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        css = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
-        self.assertIn('id="modeProjectButton"', html)
-        self.assertIn('id="modeManualButton"', html)
-        self.assertIn('id="projectPickerSearch"', html)
-        self.assertIn('id="projectOverviewSearch"', html)
-        self.assertIn(".includes(needle)", script)
-        self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", css)
-        self.assertNotIn('id="roleTemplateEditor"', html)
+        self.assert_browser_contract("search")
 
     def test_template_notice_and_custom_placeholder_are_persisted(self):
         client, _ = self.authenticated_client()
@@ -478,45 +471,13 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertFalse(self.json_request(client, "/api/dashboard")["show_favorites"])
 
     def test_frontend_contains_unsaved_template_test_and_editor_shortcuts(self):
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        style = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
-        self.assertIn('id="templateTestDialog"', html)
-        self.assertIn('onclick="openTemplateTest()"', html)
-        self.assertIn("function updateTemplateTestPreview()", script)
-        self.assertIn('(event.ctrlKey||event.metaKey)', script)
-        self.assertIn('key==="b"?"bold":"italic"', script)
-        self.assertIn('class="template-actions-menu"', script)
-        self.assertNotIn('transform:translateY(-1px)', style)
+        self.assert_browser_contract("editor")
 
     def test_frontend_has_dashboard_search_drag_drop_and_closing_action_menu(self):
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        style = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
-        self.assertIn('id="dashboardTemplateSearch"', html)
-        self.assertIn('id="dashboardTemplateDialog"', html)
-        self.assertIn("function renderDashboardTemplateSearchResults()", script)
-        self.assertIn("function createEmailFromDashboardSearch(id)", script)
-        self.assertIn("function editTemplateFromDashboardSearch(id)", script)
-        self.assertIn('document.querySelectorAll(".template-actions-menu[open]")', script)
-        self.assertIn("function beginTemplateDrag", script)
-        self.assertIn("function dropTemplate", script)
-        self.assertIn('draggable="true"', script)
-        self.assertIn("#variableChips{display:block}", style)
-        self.assertIn("#tab-variables .section-head .actions", style)
+        self.assert_browser_contract("dashboard")
 
     def test_inline_format_removal_preserves_the_selected_text(self):
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        unwrap = script.split("function unwrapEditorElement", 1)[1].split(
-            "function applyInlineFormat", 1
-        )[0]
-        inline = script.split("function applyInlineFormat", 1)[1].split(
-            "function applyListFormat", 1
-        )[0]
-        self.assertIn("preserveSelection", unwrap)
-        self.assertIn("range.setStartBefore(first)", unwrap)
-        self.assertIn("range.setEndAfter(last)", unwrap)
-        self.assertIn("unwrapEditorElement(existing,editor,true)", inline)
+        self.assert_browser_contract("editor")
 
     def test_project_json_accepts_multiple_contacts(self):
         client, _ = self.authenticated_client()
@@ -584,26 +545,7 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertIsNone(unlocked_user["locked_until"])
 
     def test_frontend_contains_new_notice_contact_and_responsive_controls(self):
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        css = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
-        self.assertIn('id="templatePickerDialog"', html)
-        self.assertIn('id="templateNotice"', html)
-        self.assertIn('id="noticeAcknowledgeButton"', html)
-        self.assertIn('id="contactDialog"', html)
-        self.assertIn('id="placeholderWarning"', html)
-        self.assertIn('id="tplNoticeEnabled"', html)
-        self.assertIn('id="recoveryCodeConfirmDialog"', html)
-        self.assertIn('id="linkEditorDialog"', html)
-        self.assertIn("Keinen Kontakt auswählen", script)
-        self.assertIn('command==="removeList"', script)
-        self.assertIn("function updatePlaceholderWarning()", script)
-        self.assertIn("function runOutputAction(action)", script)
-        self.assertIn("function openContactDialog(id)", script)
-        self.assertIn("projectRecordVariables()", script)
-        self.assertIn('input[type="checkbox"]', css)
-        self.assertIn("@media(max-width:700px)", css)
-        self.assertIn("@media(max-width:420px)", css)
+        self.assert_browser_contract("notice")
 
     def test_limited_rich_text_is_sanitized_and_persisted(self):
         client, _ = self.authenticated_client()
@@ -632,21 +574,7 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertIn("2. Link", template["body"])
 
     def test_frontend_requests_editable_multipart_eml(self):
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        eml_section = script.split("async function downloadEml()", 1)[1].split(
-            "function downloadBlob", 1
-        )[0]
-        self.assertIn('contenteditable="true"', html)
-        self.assertIn('id="tplBody"', html)
-        self.assertIn('id="resultBody"', html)
-        self.assertIn('"/api/email/eml"', eml_section)
-        self.assertIn('"X-CSRF-Token":csrfToken', eml_section)
-        self.assertIn("body_html:getEditorHtml(resultBody)", eml_section)
-        # MIME structure is now checked end-to-end in test_email_images.py.
-        self.assertIn("function sanitizeEmailHtml", script)
-        self.assertIn("function applyInlineFormat", script)
-        self.assertNotIn("document.execCommand", script)
+        self.assert_browser_contract("eml")
 
     def test_settings_expose_release_information(self):
         client, _ = self.authenticated_client()
@@ -692,34 +620,10 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertFalse(self.json_request(client, "/api/me")["user"]["must_change"])
 
     def test_frontend_defaults_and_drag_drop_controls_match_v018(self):
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('id="mode" type="hidden" value="manual"', html)
-        self.assertIn('id="projectFormTabButton" class="active"', html)
-        self.assertIn('E-Mailvorlage auswählen...', html)
-        self.assertIn('id="resultTemplateName" readonly', html)
-        self.assertIn('id="templateIdentity"', html)
-        self.assertIn('id="uMustChangePassword" type="checkbox" checked', html)
-        self.assertNotIn('id="fieldEditor"', html)
-        self.assertNotIn('onclick="moveTemplate(', script)
-        self.assertNotIn('onclick="moveCategory(', script)
-        self.assertNotIn('onclick="moveDashboardTile(', script)
-        self.assertIn("function dropCategory(", script)
-        self.assertIn("function dropDashboardTile(", script)
-        self.assertIn("function openTemplateEditor(", script)
+        self.assert_browser_contract("defaults")
 
     def test_v019_project_and_category_ui_defaults(self):
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        css = (ROOT / "static" / "style.css").read_text(encoding="utf-8")
-        manual_position = html.index('id="modeManualButton"')
-        project_position = html.index('id="modeProjectButton"')
-        self.assertLess(manual_position, project_position)
-        self.assertIn('<option value="">Projekt auswählen...</option>', script)
-        self.assertIn('await loadTemplates();', script.split("async function dropCategory", 1)[1].split("function newCategory", 1)[0])
-        self.assertNotIn('id="settingsSoftwareVersion"', html)
-        self.assertIn(".template-identity h3{margin-top:0}", css)
-        self.assertIn(".card>h2:first-child{margin-top:0}", css)
+        self.assert_browser_contract("defaults")
 
     def test_v1_template_history_archive_and_restore(self):
         client, _ = self.authenticated_client()
@@ -741,7 +645,7 @@ class LoginEndToEndTest(unittest.TestCase):
         payload = {"schema_version":"1.0","projekt":{"id":"ARCH-001","bezeichnung":"Archivtest"},"kontakte":[]}
         self.json_request(client, "/api/projects", "POST", {"data":payload})
         project = next(item for item in self.json_request(client, "/api/projects")["projects"] if item["project_key"] == "ARCH-001")
-        self.json_request(client, f'/api/projects/{project["id"]}', "DELETE")
+        self.json_request(client, f'/api/projects/{project["id"]}', "DELETE", {"expected_revision":project["revision"]})
         archived = next(item for item in self.json_request(client, "/api/projects")["projects"] if item["id"] == project["id"])
         self.assertTrue(archived["archived"])
         audit = self.json_request(client, "/api/audit")["entries"]
@@ -869,17 +773,7 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertIn("total", self.json_request(client, "/api/usage?days=30"))
         self.assertIn("status", self.json_request(client, "/api/system-status"))
 
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('id="moduleNav"', html)
-        self.assertIn('id="subNav"', html)
-        self.assertIn('data-module="projects"', html)
-        self.assertIn('>Projekte</button>', html)
-        self.assertIn('data-module="users"', html)
-        self.assertIn('>Benutzerverwaltung</button>', html)
-        self.assertEqual(html.count('data-permission="system_view"'), 4)
-        self.assertIn('function openModule(module)', script)
-        self.assertIn('system:{label:"System",tabs:["system-status","audit","usage"]}', script)
+        self.assert_browser_contract("navigation")
 
     def test_v13_quicklinks_navigation_order_and_archive_ui(self):
         client, _ = self.authenticated_client()
@@ -903,18 +797,7 @@ class LoginEndToEndTest(unittest.TestCase):
         })
         self.assertEqual(changed["settings"]["navigation_order"], reversed_order)
 
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('id="archiveTemplateDialog"', html)
-        self.assertIn('id="quicklinkDialog"', html)
-        self.assertIn('id="projectSortOrder"', html)
-        self.assertIn('id="navigationOrderList"', html)
-        self.assertNotIn('id="settingsSoftwareVersion"', html)
-        archive_function = script.split("async function archiveTemplate(id)",1)[1].split("async function restoreTemplate",1)[0]
-        self.assertNotIn("confirm(", archive_function)
-        self.assertIn("archiveTemplateDialog.showModal()", archive_function)
-        self.assertIn("template.archived===archivedOnly", script)
-        self.assertIn("function menuIcon(name)", script)
+        self.assert_browser_contract("archive")
 
     def test_v14_project_identity_is_updated_without_creating_a_duplicate(self):
         client, _ = self.authenticated_client()
@@ -934,7 +817,7 @@ class LoginEndToEndTest(unittest.TestCase):
         count_before_update = len(created)
         changed_data = dict(alpha["data"])
         changed_data["projekt"] = dict(changed_data["projekt"], id="V14-UPDATE-C", bezeichnung="Projekt Gamma")
-        self.json_request(client, f'/api/projects/{alpha["id"]}', "PUT", {"data":changed_data})
+        self.json_request(client, f'/api/projects/{alpha["id"]}', "PUT", {"data":changed_data,"expected_revision":alpha["revision"]})
         after = self.json_request(client, "/api/projects")["projects"]
         self.assertEqual(len(after), count_before_update)
         updated = next(project for project in after if project["id"] == alpha["id"])
@@ -943,7 +826,7 @@ class LoginEndToEndTest(unittest.TestCase):
         conflict_data = dict(updated["data"])
         conflict_data["projekt"] = dict(conflict_data["projekt"], id="V14-UPDATE-B")
         with self.assertRaises(urllib.error.HTTPError) as conflict:
-            self.json_request(client, f'/api/projects/{alpha["id"]}', "PUT", {"data":conflict_data})
+            self.json_request(client, f'/api/projects/{alpha["id"]}', "PUT", {"data":conflict_data,"expected_revision":updated["revision"]})
         self.assertEqual(conflict.exception.code, 409)
         self.assertEqual(len(self.json_request(client, "/api/projects")["projects"]), count_before_update)
         self.assertGreaterEqual(count_before_update, len(before) + 2)
@@ -978,7 +861,7 @@ class LoginEndToEndTest(unittest.TestCase):
         for project in project_rows:
             if project["project_key"].startswith("V14-DELETE-"):
                 project_ids.append(project["id"])
-                self.json_request(client, f'/api/projects/{project["id"]}', "DELETE")
+                self.json_request(client, f'/api/projects/{project["id"]}', "DELETE", {"expected_revision":project["revision"]})
         deleted = self.json_request(client, "/api/projects/delete-archived", "POST", {"ids":project_ids})
         self.assertEqual(deleted["deleted"], 2)
         remaining_ids = {project["id"] for project in self.json_request(client, "/api/projects")["projects"]}
@@ -993,17 +876,7 @@ class LoginEndToEndTest(unittest.TestCase):
         removed = self.json_request(client, "/api/templates/delete-archived", "POST", {"ids":duplicate_ids})
         self.assertEqual(removed["deleted"], 2)
 
-        html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
-        script = (ROOT / "static" / "app.js").read_text(encoding="utf-8")
-        self.assertIn('id="archiveProjectDialog"', html)
-        self.assertIn('id="permanentDeleteDialog"', html)
-        self.assertIn('id="tab-project-detail"', html)
-        self.assertIn('id="projectEditConflict"', html)
-        self.assertIn("project.archived===showArchived", script)
-        self.assertIn("String(left.project_key).localeCompare", script)
-        self.assertIn('link.link_type==="internal"', script)
-        permanent_delete_function = script.split("async function permanentlyDeleteTemplate",1)[1].split("async function openTemplateHistory",1)[0]
-        self.assertNotIn("confirm(", permanent_delete_function)
+        self.assert_browser_contract("archive")
 
     def test_v20_project_email_is_saved_as_snapshot(self):
         client, _ = self.authenticated_client()
@@ -1054,18 +927,7 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertTrue(all(any(item["id"]==question_id for item in overview) for question_id in created["ids"]))
 
     def test_v20_frontend_contains_modular_bidder_workflow(self):
-        html=(ROOT/"static"/"index.html").read_text(encoding="utf-8")
-        script=(ROOT/"static"/"app.js").read_text(encoding="utf-8")
-        self.assertIn('data-module="bidder"',html)
-        self.assertIn('id="tab-bid-questions"',html)
-        self.assertIn('id="tab-bid-question-create"',html)
-        self.assertIn('id="tab-bid-answers"',html)
-        self.assertIn('id="tab-bid-taxonomy"',html)
-        self.assertIn('id="saveProjectEmailButton"',html)
-        self.assertIn('3 – Ausschreibung',html)
-        self.assertIn('bidder:{label:"Bieterfragen"',script)
-        self.assertIn('function parsedBidImport()',script)
-        self.assertIn('function saveEmailToProject()',script)
+        self.assert_browser_contract("bids")
 
     def test_v21_bid_question_answer_status_can_be_acknowledged(self):
         client, _ = self.authenticated_client()
@@ -1099,18 +961,7 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertIsNone(changed["answered_at"])
 
     def test_v21_frontend_has_search_pickers_batch_and_saved_email_editor(self):
-        html=(ROOT/"static"/"index.html").read_text(encoding="utf-8")
-        script=(ROOT/"static"/"app.js").read_text(encoding="utf-8")
-        self.assertIn('id="tab-bid-question-batch"',html)
-        self.assertIn('id="tab-bid-question-import"',html)
-        self.assertIn('id="bidProjectPickerDialog"',html)
-        self.assertIn('id="bidTaxonomyPickerDialog"',html)
-        self.assertIn('id="standardAnswerPickerDialog"',html)
-        self.assertIn('id="openSavedEmailEditorButton"',html)
-        self.assertIn('function openSavedEmailInEditor()',script)
-        self.assertIn('function saveBidBatch()',script)
-        self.assertIn('function acknowledgeBidQuestion(id)',script)
-        self.assertIn('function copyBidAnswerField(id,key)',script)
+        self.assert_browser_contract("bids")
 
     def test_v22_bidders_answer_cases_and_linked_question(self):
         client, _ = self.authenticated_client()
@@ -1150,14 +1001,7 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertEqual(question["standard_variant_id"],allowed["id"])
 
     def test_v22_frontend_has_bidder_directory_filters_and_answer_variants(self):
-        html=(ROOT/"static"/"index.html").read_text(encoding="utf-8")
-        script=(ROOT/"static"/"app.js").read_text(encoding="utf-8")
-        for marker in ['id="tab-bidders"','id="bidderPickerDialog"','id="bidQuestionCategoryFilter"',
-                       'id="bidQuestionBidderFilter"','id="bidAnswerVariants"']:
-            self.assertIn(marker,html)
-        for marker in ['function importBidders()','function renderBidderPickerResults()',
-                       'function addBidAnswerVariant(','function updateBidFilterOptions()']:
-            self.assertIn(marker,script)
+        self.assert_browser_contract("bids")
 
     def test_v23_document_template_upload_block_and_docx_generation(self):
         client, _ = self.authenticated_client()
@@ -1209,27 +1053,10 @@ class LoginEndToEndTest(unittest.TestCase):
         self.assertEqual(loaded_question["question_year"],2024)
 
     def test_v23_frontend_contains_document_module_and_split_bidder_pages(self):
-        html=(ROOT/"static"/"index.html").read_text(encoding="utf-8")
-        script=(ROOT/"static"/"app.js").read_text(encoding="utf-8")
-        for marker in ['data-nav-key="documents"','id="tab-document-create"','id="tab-document-templates"',
-                       'id="tab-document-blocks"','id="tab-bidder-create"','id="bidQuestionYear"']:
-            self.assertIn(marker,html)
-        script += (ROOT/"static"/"documents.js").read_text(encoding="utf-8")
-        for marker in ['function generateDocument(','function createQuickBidder(','function openBidAnswerDetail(']:
-            self.assertIn(marker,script)
+        self.assert_browser_contract("documents")
 
     def test_v30_frontend_uses_modular_responsive_application_shell(self):
-        html=(ROOT/"static"/"index.html").read_text(encoding="utf-8")
-        shell=(ROOT/"static"/"ui-shell.js").read_text(encoding="utf-8")
-        styles=(ROOT/"static"/"modern.css").read_text(encoding="utf-8")
-        for marker in ['id="appSidebar"','id="pageTitle"','id="pageBreadcrumb"',
-                       'id="sidebarOpenButton"','/static/modern.css','/static/ui-shell.js']:
-            self.assertIn(marker,html)
-        for marker in ['function decorateNavigation()','function updateAppShell(','window.refreshShellPermissions']:
-            self.assertIn(marker,shell)
-        for marker in ['--sidebar-width: 286px','.sidebar-submenu','.project-table-shell',
-                       '@media (max-width: 980px)']:
-            self.assertIn(marker,styles)
+        self.assert_browser_contract("navigation")
 
     def test_v12_legacy_system_permissions_are_migrated(self):
         with app.db() as conn:

@@ -6,21 +6,22 @@
 <title>Wieseke Vorlagen-Engine</title>
 <link rel="icon" href="/static/logo.png">
 <link rel="stylesheet" href="/static/style.css">
-<link rel="stylesheet" href="/static/modern.css">
+<link rel="stylesheet" href="/static/design/tokens.css">
+<link rel="stylesheet" href="/static/workspace.css">
 </head>
-<body>
+<body class="wk-ui">
 <div id="toast"></div>
 
 <section id="loginView" class="center-screen">
   <div class="card login-card">
     <img src="/static/logo.png" class="logo dynamic-logo" alt="Anwendungslogo">
     <h1 class="dynamic-app-name">Wieseke Vorlagen-Engine</h1>
-    <p class="muted">Projekt- und Vorlagenplattform · Version 3.4</p>
+    <p class="muted">Projekt- und Vorlagenplattform<span id="loginAppVersion"></span></p>
     <div id="loginError" class="warning" hidden></div>
     <form id="loginForm" method="post" action="/login">
       <input type="hidden" id="loginNext" name="next" value="/">
       <label>Benutzername<input id="loginUsername" name="username" autocomplete="username" value="admin" required></label>
-      <label>Passwort<input id="loginPassword" name="password" type="password" autocomplete="current-password" value="Admin12345!" required></label>
+      <label>Passwort<input id="loginPassword" name="password" type="password" autocomplete="current-password" required></label>
       <button type="submit" class="primary">Anmelden</button>
     </form>
     <button class="link-btn" onclick="showRecovery()">Passwort mit Wiederherstellungscode zurücksetzen</button>
@@ -33,17 +34,9 @@
     <button class="brand brand-home" type="button" onclick="goHome()" title="Zur Hauptseite"><img src="/static/logo.png" class="dynamic-logo" alt="Anwendungslogo"><strong class="dynamic-app-name">Wieseke Vorlagen-Engine</strong></button>
     <button id="sidebarCloseButton" class="sidebar-close icon-button" type="button" aria-label="Navigation schließen">×</button>
   </div>
-<nav id="moduleNav" class="module-nav" aria-label="Hauptnavigation">
-  <button data-nav-key="dashboard" data-tab="dashboard" data-permission="email_create" class="active">Hauptseite</button>
-  <button data-nav-key="email" data-module="email" data-any-permission="email_create,templates_manage,categories_manage">E-Mail-Vorlagen</button>
-  <button data-nav-key="documents" data-module="documents" data-any-permission="documents_create,document_templates_manage">Dokumente</button>
-  <button data-nav-key="bidder" data-module="bidder" data-any-permission="bid_questions_view,bid_questions_manage,bid_answers_manage">Bieterfragen</button>
-  <button data-nav-key="projects" data-module="projects" data-any-permission="projects_view,projects_manage">Projekte</button>
-  <button data-nav-key="users" data-module="users" data-any-permission="users_manage,roles_manage">Benutzerverwaltung</button>
-  <button data-nav-key="system" data-module="system" data-permission="system_view">System</button>
-  <button data-nav-key="help" data-tab="help">Hilfe</button>
-</nav>
+<div id="navigationMount"></div>
   <div class="sidebar-footer">
+    <button class="sidebar-footer-action" data-tab="help" onclick="switchTab('help')"><svg class="nav-icon" aria-hidden="true"><use href="/static/design/icons.svg#i-help"/></svg>Hilfe</button>
     <button class="sidebar-footer-action settings-tool" data-tab="settings" data-any-permission="settings_manage,backup_manage,templates_export_all" onclick="switchTab('settings')" data-shell-icon="settings">Einstellungen</button>
     <button class="sidebar-footer-action account-tool" data-tab="account" onclick="switchTab('account')" data-shell-icon="account">Mein Konto</button>
     <div class="sidebar-account">
@@ -63,31 +56,6 @@
     <div id="pageBreadcrumb" class="breadcrumb" aria-label="Brotkrümelnavigation"><span>Übersicht</span></div>
   </div>
 </header>
-<nav id="subNav" class="sub-nav" aria-label="Bereichsnavigation" hidden>
-  <button data-module-owner="email" data-tab="generator" data-permission="email_create">E-Mail erstellen</button>
-  <button data-module-owner="email" data-tab="templates" data-permission="templates_manage">Vorlagen</button>
-  <button data-module-owner="email" data-tab="categories" data-permission="categories_manage">Mailkategorien</button>
-  <button data-module-owner="documents" data-tab="document-create" data-permission="documents_create">Dokument erstellen</button>
-  <button data-module-owner="documents" data-tab="document-templates" data-permission="document_templates_manage">Dokumentvorlagen</button>
-  <button data-module-owner="documents" data-tab="document-blocks" data-permission="document_templates_manage">Textbausteine</button>
-  <button data-module-owner="bidder" data-tab="bid-questions" data-any-permission="bid_questions_view,bid_questions_manage">Gesamtübersicht</button>
-  <button data-module-owner="bidder" data-tab="bid-question-create" data-permission="bid_questions_manage">Einzelerfassung</button>
-  <button data-module-owner="bidder" data-tab="bid-question-batch" data-permission="bid_questions_manage">Batch-Erfassung</button>
-  <button data-module-owner="bidder" data-tab="bid-question-import" data-permission="bid_questions_manage">Excel-Import</button>
-  <button data-module-owner="bidder" data-tab="bid-answers" data-any-permission="bid_questions_view,bid_questions_manage,bid_answers_manage">Standardantworten</button>
-  <button data-module-owner="bidder" data-tab="bid-answer-create" data-permission="bid_answers_manage">Antwort anlegen</button>
-  <button data-module-owner="bidder" data-tab="bid-taxonomy" data-permission="bid_answers_manage">Kategorien und Themen</button>
-  <button data-module-owner="projects" data-tab="project-overview" data-permission="projects_view">Projektübersicht</button>
-  <button data-module-owner="projects" data-tab="project-create" data-permission="projects_manage">Projekt anlegen</button>
-  <button data-module-owner="projects" data-tab="bidders" data-permission="projects_view">Bieterverzeichnis</button>
-  <button data-module-owner="projects" data-tab="bidder-create" data-permission="projects_manage">Bieter anlegen</button>
-  <button data-module-owner="projects" data-tab="variables" data-permission="variables_manage">Platzhalter</button>
-  <button data-module-owner="users" data-tab="users" data-permission="users_manage">Benutzer</button>
-  <button data-module-owner="users" data-tab="roles" data-permission="roles_manage">Rollen</button>
-  <button data-module-owner="system" data-tab="system-status" data-permission="system_view">Systemstatus</button>
-  <button data-module-owner="system" data-tab="audit" data-permission="system_view">Änderungsprotokoll</button>
-  <button data-module-owner="system" data-tab="usage" data-permission="system_view">Nutzungsauswertung</button>
-</nav>
 <main>
 <section id="tab-dashboard" class="tab active">
   <div class="section-head">
@@ -145,8 +113,9 @@
         <button class="primary" id="downloadEmlButton" onclick="runOutputAction('eml')">EML-Datei erzeugen</button>
         <button id="openMailtoButton" onclick="runOutputAction('mailto')">In Outlook öffnen</button>
         <button id="copyResultButton" onclick="runOutputAction('copy')">Nur E-Mailtext kopieren</button>
-        <button id="saveProjectEmailButton" type="button" onclick="saveEmailToProject()" hidden>In Projekt speichern</button>
+        <button id="saveProjectEmailButton" type="button" aria-describedby="saveProjectEmailHint" onclick="saveEmailToProject()" hidden>In Projekt speichern</button>
       </div>
+      <p id="saveProjectEmailHint" class="hint" role="status" hidden>Übernehmen Sie die Angaben erneut in die E-Mail, bevor Sie sie im ausgewählten Projekt speichern.</p>
       <div class="export-info"><div class="info-icon" aria-hidden="true">i</div><div>Die bevorzugte Export-Methode ist EML: Formatierungen und eingebettete Bilder bleiben erhalten.<br>Die heruntergeladene Datei in Outlook öffnen und vor dem Versenden prüfen.<br>Outlook/Mailto übernimmt nur Text. Kopieren kann einfache Textformatierung übertragen; bei Bildern wird nach Bestätigung nur Klartext kopiert.</div></div>
       <p class="hint">Die Anwendung versendet keine E-Mail. Die Nachricht wird vor dem Versand in Outlook geöffnet.</p>
     </div>
@@ -213,7 +182,7 @@
 
 <section id="tab-bid-questions" class="tab">
   <div class="card">
-    <div class="section-head"><div><h2>Bieterfragen – Gesamtübersicht</h2><p class="muted">Projektübergreifende Dokumentation aller erfassten Bieterfragen.</p></div><button data-permission="bid_questions_manage" class="primary" onclick="switchTab('bid-question-create')">Bieterfragen erfassen</button></div>
+    <div class="section-head"><div><h2>Bieterfragen – Gesamtübersicht</h2><p class="muted">Projektübergreifende Dokumentation aller erfassten Bieterfragen.</p></div><button data-permission="bid_questions_manage" class="primary" onclick="openNewBidQuestion()">Bieterfragen erfassen</button></div>
     <div class="bid-filter-bar"><label>Projekt<select id="bidQuestionProjectFilter" onchange="renderBidQuestionList()"><option value="">Alle Projekte</option></select></label><label>Kategorie<select id="bidQuestionCategoryFilter" onchange="renderBidQuestionList()"><option value="">Alle Kategorien</option></select></label><label>Bieter<select id="bidQuestionBidderFilter" onchange="renderBidQuestionList()"><option value="">Alle Bieter</option></select></label></div>
     <div class="bid-fulltext-search"><label>Volltextsuche<input id="bidQuestionSearch" type="search" placeholder="Suchbegriff eingeben" oninput="renderBidQuestionList()"></label><fieldset><legend>Durchsuchte Felder</legend><label><input type="checkbox" data-bid-search-field="question" checked onchange="renderBidQuestionList()"> Frage</label><label><input type="checkbox" data-bid-search-field="agency_comment" checked onchange="renderBidQuestionList()"> Kommentar</label><label><input type="checkbox" data-bid-search-field="answer" checked onchange="renderBidQuestionList()"> Antwort</label><label><input type="checkbox" data-bid-search-field="subject" checked onchange="renderBidQuestionList()"> Thema</label><label><input type="checkbox" data-bid-search-field="bidder" checked onchange="renderBidQuestionList()"> Bieter</label></fieldset></div>
     <div id="bidQuestionList" class="bid-question-list"></div>
@@ -287,7 +256,7 @@
 </section>
 
 <section id="tab-bidders" class="tab">
-  <div class="card"><div class="section-head"><div><h2>Bieterverzeichnis</h2><p class="muted">Alle zentral verwalteten Bieter.</p></div><button data-permission="projects_manage" onclick="newBidder();switchTab('bidder-create')">Neuen Bieter erfassen</button></div><label>Verzeichnis durchsuchen<input id="bidderDirectorySearch" type="search" placeholder="Bieter, Firma, Ort oder Land" oninput="renderBidderDirectory()"></label><div id="bidderDirectoryList" class="bidder-directory-grid"></div></div>
+  <div class="card"><div class="section-head"><div><h2>Bieterverzeichnis</h2><p class="muted">Alle zentral verwalteten Bieter.</p></div><button data-permission="projects_manage" onclick="openNewBidder()">Neuen Bieter erfassen</button></div><label>Verzeichnis durchsuchen<input id="bidderDirectorySearch" type="search" placeholder="Bieter, Firma, Ort oder Land" oninput="renderBidderDirectory()"></label><div id="bidderDirectoryList" class="bidder-directory-grid"></div></div>
 </section>
 
 <section id="tab-bidder-create" class="tab">
@@ -592,6 +561,15 @@
 </section>
 
 <section id="tab-help" class="tab">
+  <div class="card help-content">
+    <h2>Arbeiten mit der Vorlagen-Engine</h2>
+    <p><strong>Arbeiten</strong> enthält die täglichen Arbeitsplätze und Projekte. Unter <strong>Bibliotheken</strong> pflegen Sie Vorlagen, Kategorien, Standardantworten, Bieter und gemeinsame Platzhalter. Unter <strong>Administration</strong> finden Sie Benutzer, Rollen und Systemwerkzeuge. Es werden nur freigegebene Seiten angezeigt.</p>
+    <p>Gruppen mit Unterseiten klappen auf, ohne zu navigieren. „Neu anlegen“ steht in der jeweiligen Liste. Einstellungen, Hilfe und Mein Konto sind unten verankert. Die Menüordnung kann pro Bereich in Einstellungen geändert werden (Ziehen oder Alt + Pfeiltasten).</p>
+    <p><strong>Entwürfe:</strong> Ungespeicherte Änderungen bleiben beim Wechsel innerhalb dieses Tabs erhalten. „Entwurf verwerfen“ fragt vorher nach. Neuladen oder Schließen zeigt eine Browserwarnung, speichert die Inhalte aber nicht. Bei Absturz gehen Entwürfe verloren. Passwörter und einmalige Zugangsdaten werden nicht in Entwürfen gehalten.</p>
+    <p><strong>E-Mails:</strong> Variablen links ändern nicht automatisch den Ergebnistext rechts. Verwenden Sie „In E-Mail übernehmen“. Eigene Änderungen werden vor dem Ersetzen abgefragt. EML erhält die unterstützte Formatierung und eingebettete Bilder; Mailto ist eine eingeschränkte Alternative.</p>
+    <p><strong>Gleichzeitige Änderungen:</strong> Hat jemand das Projekt seit dem Öffnen geändert, wird Ihr Speicherversuch zurückgewiesen. Ihre Eingaben bleiben sichtbar. „Aktuellen Stand neu laden“ ersetzt sie erst nach Bestätigung. Übertragen Sie benötigte Änderungen anschließend erneut.</p>
+    <p>Sicherungen stehen unter System, Sammel-Exporte in der E-Mail-Bibliothek. Vor Updates eine konsistente Sicherung anlegen; die mitgelieferte UPDATE.md beschreibt Testlauf und Rückkehr zum alten Stand.</p>
+  </div>
   <div class="card help-content api-doc">
     <h2>Projekt-API</h2>
     <p>Die API legt neue Projekte einschließlich Kontakten an. Für vorhandene Projekt-IDs (auch archivierte) wird 409 zurückgegeben; bestehende Projekte werden nicht verändert.</p>
@@ -715,7 +693,7 @@ Content-Type: application/json
 
 <dialog id="projectEditDialog" class="wide-dialog"><form method="dialog" onsubmit="return false">
   <h2>Projektdaten bearbeiten</h2><input type="hidden" id="projectEditId">
-  <div id="projectEditConflict" class="placeholder-warning" hidden><div class="warning-icon" aria-hidden="true">!</div><div><strong>Projekt-ID bereits vergeben</strong><br><span></span></div></div>
+  <div id="projectEditConflict" class="placeholder-warning" hidden><div class="warning-icon" aria-hidden="true">!</div><div><strong>Projekt konnte nicht gespeichert werden</strong><br><span></span><br><button onclick="reloadEditingProject()">Aktuellen Stand neu laden</button></div></div>
   <div id="projectEditFields" class="form-grid"></div>
   <div class="actions"><button class="primary" onclick="saveEditedProject()">Projekt speichern</button><button onclick="this.closest('dialog').close()">Abbrechen</button></div>
 </form></dialog>
@@ -846,7 +824,6 @@ Content-Type: application/json
   <h2>Dokumentvorlage löschen?</h2><p>Das Original und seine Dateiversionen werden endgültig gelöscht. Bereits im Projekt gespeicherte Dokumente bleiben erhalten.</p>
   <div class="actions"><button onclick="byId('deleteDocumentTemplateDialog').close()">Abbrechen</button><button class="danger" onclick="deleteDocumentTemplate()">Endgültig löschen</button></div>
 </dialog>
-<script src="/static/ui-shell.js"></script>
 <dialog id="emailImageDialog" aria-labelledby="emailImageTitle" oncancel="imageUploadRevision++">
   <h2 id="emailImageTitle">Bild einfügen oder bearbeiten</h2>
   <p class="hint">PNG/JPG bis 8 MB und 20 Millionen Pixel. Bilder werden automatisch auf höchstens 1600 Pixel und 2 MB verkleinert. Maximal 10 Bilder / 4 MB pro E-Mail.</p>
@@ -863,13 +840,9 @@ Content-Type: application/json
   <p>Diese E-Mail enthält Bilder. Über Outlook/Mailto und „Text kopieren“ wird in diesem Fall nur unformatierter Text mit Bildbeschreibungen übernommen. Für Bilder und Formatierung bitte die EML-Datei verwenden.</p>
   <div class="actions"><button onclick="byId('imageExportDialog').close()">Abbrechen</button><button onclick="confirmImageTextExport()">Nur Text übernehmen</button></div>
 </dialog>
-<script src="/static/email-images.js"></script>
 <dialog id="bidderViewDialog" aria-labelledby="bidderViewTitle"><h2 id="bidderViewTitle"></h2><pre id="bidderAddress"></pre><div class="actions"><button onclick="copyBidderAddress()">Anschrift kopieren</button><button onclick="byId('bidderViewDialog').close()">Schließen</button></div></dialog>
 <dialog id="apiKeyConfirmDialog"><h2>API-Schlüssel</h2><p id="apiKeyConfirmText"></p><div class="actions"><button onclick="byId('apiKeyConfirmDialog').close()">Abbrechen</button><button onclick="performProjectApiKeyAction()">Bestätigen</button></div></dialog>
 <dialog id="apiKeySecretDialog" onclose="byId('apiKeySecret').value=''" aria-labelledby="apiKeySecretTitle"><h2 id="apiKeySecretTitle">API-Schlüssel – einmalige Anzeige</h2><p>Benutzer: <b id="apiKeySecretUser"></b></p><p>Bitte jetzt sicher ablegen. Nach dem Schließen kann dieser Schlüssel nicht erneut angezeigt werden.</p><textarea id="apiKeySecret" readonly rows="3"></textarea><div class="actions"><button onclick="copyApiKey()">Schlüssel kopieren</button><button onclick="byId('apiKeySecretDialog').close()">Schließen</button></div></dialog>
-<script src="/static/project-api.js"></script>
-<script src="/static/app.js"></script>
-<script src="/static/documents.js"></script>
-<script src="/static/bid-workbooks.js"></script>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

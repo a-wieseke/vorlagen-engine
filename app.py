@@ -30,6 +30,8 @@ from urllib.parse import urlparse, parse_qs, quote
 import bid_workbooks
 import document_tools
 import email_images
+from core import projects as project_service, security as account_security, migrations
+from modules import administration_routes, mail_routes, documents_routes, bids_routes, projects_routes
 
 try:
     from argon2 import PasswordHasher
@@ -53,9 +55,10 @@ DB_PATH = DATA_DIR / "wieseke.db"
 HOST = os.environ.get("WVE_HOST", "127.0.0.1")
 PORT = int(os.environ.get("WVE_PORT", "8877"))
 SESSION_HOURS = 8
-SOFTWARE_VERSION = "3.4"
+SOFTWARE_VERSION = "4.0.1"
 VERSION_YEAR = 2026
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 13
+DEMO_MODE = os.environ.get("WVE_DEMO_MODE", "0") == "1"
 SECURE_COOKIES = os.environ.get("WVE_SECURE_COOKIES", "0") == "1"
 OPEN_BROWSER = os.environ.get("WVE_OPEN_BROWSER", "1") == "1"
 ph = PasswordHasher()
@@ -311,6 +314,9 @@ def db():
 
 def init_db():
     """Create a new database or migrate an existing prototype database in place."""
+    previous = migrations.inspect_database(DB_PATH, SCHEMA_VERSION)
+    if DB_PATH.exists() and DB_PATH.stat().st_size and previous < SCHEMA_VERSION:
+        create_database_backup(f"before-schema-{previous}-to-{SCHEMA_VERSION}")
     with db() as conn:
         conn.executescript("""
         CREATE TABLE IF NOT EXISTS roles (
@@ -785,32 +791,30 @@ def init_db():
         conn.execute("""UPDATE users SET role_id=CASE WHEN role='admin' THEN ? ELSE ? END
             WHERE role_id IS NULL""",(admin_role_id,user_role_id))
 
-        # Die festen Testzugangsdaten werden nur beim erstmaligen Anlegen gesetzt.
-        # Spätere Passwortänderungen bleiben dadurch auch nach einem Neustart erhalten.
-        password = "Admin12345!"
-        recovery = "WIES-2026-TEST"
-        admin = conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()
-        admin_created = not bool(admin)
-        if admin:
-            conn.execute("""UPDATE users SET role='admin',active=1,must_change=0
-                WHERE username='admin'""")
-        else:
+        # Bootstrap only an empty installation. Never repair/reactivate an
+        # existing account implicitly, regardless of its username.
+        if not conn.execute("SELECT 1 FROM users LIMIT 1").fetchone():
+            if DEMO_MODE:
+                username, password, recovery = "admin", "Admin12345!", "WIES-2026-TEST"
+            else:
+                import getpass
+                if not sys.stdin.isatty():
+                    raise RuntimeError("Ersteinrichtung benötigt eine lokale Konsole. Für isolierte Tests WVE_DEMO_MODE=1 setzen.")
+                username = input("Erster Administrator – Benutzername [admin]: ").strip() or "admin"
+                while True:
+                    password = getpass.getpass("Passwort (mindestens 10 Zeichen, Groß-/Kleinbuchstaben und Zahl): ")
+                    error = validate_password(password)
+                    if error:
+                        print(error); continue
+                    if password == getpass.getpass("Passwort wiederholen: "): break
+                    print("Die Passwörter stimmen nicht überein.")
+                recovery = secrets.token_urlsafe(24)
             conn.execute("""INSERT INTO users
-                (username,first_name,last_name,email,password_hash,recovery_hash,role,active,must_change,created_at)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                ("admin","System","Administrator","",ph.hash(password),ph.hash(recovery),"admin",1,0,now_iso()))
-        conn.execute("UPDATE users SET role_id=? WHERE username='admin'",(admin_role_id,))
-        print("\n" + "="*68)
-        if admin_created:
-            print("TESTZUGANG")
-            print("Benutzername: admin")
-            print("Passwort: Admin12345!")
-            print("Wiederherstellungscode: WIES-2026-TEST")
-            print("Diese Zugangsdaten gelten nur bis zu einer späteren Änderung.")
-        else:
-            print("Administratorkonto vorhanden. Das gespeicherte Passwort bleibt gültig.")
-        print(f"Lokale Adresse: http://{HOST}:{PORT}/")
-        print("="*68 + "\n")
+                (username,first_name,last_name,email,password_hash,recovery_hash,role,active,must_change,created_at,role_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (username,"System","Administrator","",ph.hash(password),ph.hash(recovery),"admin",1,0,now_iso(),admin_role_id))
+            print(f"Administrator {username} angelegt. Wiederherstellungscode (einmalig): {recovery}")
+            if DEMO_MODE: print("DEMO-MODUS: admin / Admin12345! – nicht öffentlich betreiben!")
         tcount = conn.execute("SELECT COUNT(*) FROM templates").fetchone()[0]
         if tcount == 0:
             for t in DEFAULT_TEMPLATES:
@@ -842,9 +846,8 @@ def init_db():
                     (key,label,field_type,source,required,order))
         conn.execute("""INSERT OR IGNORE INTO app_settings(id,app_name,logo_data)
             VALUES (1,'Wieseke Vorlagen-Engine','')""")
-        conn.execute("""INSERT INTO schema_meta(id,schema_version,migrated_at) VALUES (1,?,?)
-            ON CONFLICT(id) DO UPDATE SET schema_version=excluded.schema_version,migrated_at=excluded.migrated_at""",
-            (SCHEMA_VERSION,now_iso()))
+        if previous < SCHEMA_VERSION:
+            migrations.migrate(conn, previous, SCHEMA_VERSION)
 
         # Every existing template receives a baseline version once. Later saves
         # append immutable snapshots, which can be inspected and restored.
@@ -1004,14 +1007,29 @@ def create_database_backup(prefix="wieseke"):
 
 
 def create_daily_backup():
-    today = datetime.now().strftime("%Y%m%d")
+    today = datetime.now(timezone.utc).strftime("%Y%m%d")
     existing = list(backup_directory().glob(f"daily-{today}-*.db"))
     if not existing and DB_PATH.exists():
         create_database_backup(f"daily-{today}")
-    cutoff = datetime.now() - timedelta(days=30)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     for path in backup_directory().glob("daily-*.db"):
-        if datetime.fromtimestamp(path.stat().st_mtime) < cutoff:
+        if datetime.fromtimestamp(path.stat().st_mtime, timezone.utc) < cutoff:
             path.unlink(missing_ok=True)
+
+
+def backup_worker(stop):
+    """Periodic service, also protects long-running installations."""
+    while not stop.wait(3600):
+        try: create_daily_backup()
+        except Exception as error: print(f"WARNUNG: tägliche Sicherung fehlgeschlagen: {error}")
+
+
+def revoke_credentials(conn, user_id, *, keys=True):
+    for token, session in list(SESSIONS.items()):
+        if session["user_id"] == user_id:
+            SESSIONS.pop(token, None)
+    if keys:
+        conn.execute("UPDATE project_api_keys SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL", (now_iso(),user_id))
 
 
 def security_headers(handler):
@@ -1071,7 +1089,7 @@ def user_with_role(conn, *, user_id=None, username=None, active_only=False):
     value = user_id if user_id is not None else username
     if active_only: where += " AND u.active=1"
     return conn.execute(f"""SELECT u.*,r.name AS role_name,
-        r.permissions_json,r.all_templates,r.all_categories
+        r.permissions_json,r.all_templates,r.all_categories,r.is_system AS role_system
         FROM users u LEFT JOIN roles r ON r.id=u.role_id WHERE {where}""",(value,)).fetchone()
 
 def permissions_from_row(row):
@@ -1093,6 +1111,8 @@ def user_dict(row):
         "active": bool(row["active"]), "must_change": bool(row["must_change"]),
         "failed_login_attempts": int(row["failed_login_attempts"] or 0),
         "locked_until": row["locked_until"],
+        "failed_recovery_attempts": row["failed_recovery_attempts"],
+        "recovery_locked_until": row["recovery_locked_until"],
         "password_policy_exempt": bool(row["password_policy_exempt"])
     }
 
@@ -1209,7 +1229,7 @@ def variable_dict(row):
 
 def settings_dict():
     with db() as conn:
-        row = conn.execute("SELECT app_name,logo_data,navigation_order_json FROM app_settings WHERE id=1").fetchone()
+        row = conn.execute("SELECT app_name,logo_data,navigation_order_json,navigation_areas_json FROM app_settings WHERE id=1").fetchone()
     try:
         navigation_order = json.loads(row["navigation_order_json"] or "[]") if row else []
     except (TypeError, ValueError):
@@ -1220,6 +1240,7 @@ def settings_dict():
         "app_name": row["app_name"] if row else "Wieseke Vorlagen-Engine",
         "logo_data": row["logo_data"] if row else "",
         "navigation_order": navigation_order,
+        "navigation_areas": json.loads(row["navigation_areas_json"] or '{}') if row else {},
     }
 
 def software_info_dict():
@@ -1399,7 +1420,14 @@ def read_form(handler):
     raw = handler.rfile.read(length).decode("utf-8", errors="replace")
     return {k: v[-1] for k, v in parse_qs(raw).items()}
 
+class ApplicationServices:
+    """Late-bound services keep test databases and runtime configuration injectable."""
+    def __getattr__(self, name):
+        return globals()[name]
+
+
 class Handler(BaseHTTPRequestHandler):
+    services = ApplicationServices()
     """Small JSON/HTML HTTP application used by the local prototype."""
     server_version = f"WiesekeVorlagenEngine/{SOFTWARE_VERSION}"
 
@@ -1408,7 +1436,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def serve_file(self, rel):
         path = (STATIC_DIR / rel).resolve()
-        if not str(path).startswith(str(STATIC_DIR.resolve())) or not path.exists() or not path.is_file():
+        if not path.is_relative_to(STATIC_DIR.resolve()) or not path.exists() or not path.is_file():
             self.send_error(404); return
         data = path.read_bytes()
         mime = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
@@ -1421,6 +1449,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def require_auth(self, admin=False, permission=None):
+        # Defense in depth: a newly extracted route cannot accidentally bypass
+        # the adapter's CSRF gate by dispatching before a verb-specific check.
+        if self.command not in {'GET','HEAD','OPTIONS'} and not csrf_valid(self):
+            json_response(self,403,{"error":"Sicherheitsprüfung fehlgeschlagen. Bitte die Seite neu laden."});return None
         session = cookie_session(self)
         if not session:
             json_response(self, 401, {"error":"Nicht angemeldet."}); return None
@@ -1428,10 +1460,28 @@ class Handler(BaseHTTPRequestHandler):
             row = user_with_role(conn,user_id=session["user_id"],active_only=True)
         if not row:
             json_response(self, 401, {"error":"Konto nicht verfügbar."}); return None
+        if row["must_change"] and urlparse(self.path).path not in {"/api/me", "/api/change-password", "/api/logout"}:
+            json_response(self, 403, {"error":"Bitte ändern Sie zuerst Ihr Passwort.", "code":"password_change_required"}); return None
         required_permission = permission or ("roles_manage" if admin else None)
         if required_permission and required_permission not in permissions_from_row(row):
             json_response(self, 403, {"error":"Für diese Funktion fehlt die erforderliche Berechtigung."}); return None
+        target_match = re.fullmatch(r"/api/users/(\d+)(?:/(?:password|recovery|reset|unlock))?", urlparse(self.path).path)
+        if target_match:
+            with db() as conn:
+                error = self.target_account_error(conn, row, int(target_match[1]))
+            if error:
+                json_response(self, 403, {"error":error}); return None
         return row
+
+    def target_account_error(self, conn, actor, target_id):
+        target = user_with_role(conn, user_id=target_id)
+        error = account_security.target_error(actor, target, permissions_from_row)
+        if error or account_security.is_system_admin(actor): return error
+        if not actor["all_categories"]:
+            grants = lambda uid: {r[0] for r in conn.execute("SELECT category_id FROM role_categories WHERE role_id=?", (uid,))}
+            if not grants(target["role_id"]).issubset(grants(actor["role_id"])):
+                return "Das Zielkonto besitzt weitergehenden Zugriff auf Mailkategorien."
+        return None
 
     def do_GET(self):
         p = urlparse(self.path).path
@@ -1448,351 +1498,21 @@ class Handler(BaseHTTPRequestHandler):
                 candidates=conn.execute("SELECT id FROM users WHERE active=1" + ("" if admin else " AND id=?"),() if admin else (current["id"],)).fetchall()
                 targets=[user_with_role(conn,user_id=row["id"]) for row in candidates]
             return json_response(self,200,{"keys":[dict(row) for row in rows],"users":[{"id":row["id"],"username":row["username"]} for row in targets if "projects_api_create" in permissions_from_row(row)]})
-        if p in {"/", "/excel-import"} or re.fullmatch(r"/vorlage/\d+",p): return self.serve_file("index.html")
+        if p in {"/", "/excel-import"} or re.fullmatch(r"/vorlage/\d+",p) or re.fullmatch(r"/app/[a-z-]+(?:/\d+)?",p): return self.serve_file("index.html")
         if p == "/health": return json_response(self,200,{"ok":True,"version":SOFTWARE_VERSION,"schema_version":SCHEMA_VERSION})
         if p.startswith("/static/"): return self.serve_file(p[len("/static/"):])
         if p == "/api/public-settings":
-            return json_response(self,200,{"settings":settings_dict()})
+            return json_response(self,200,{"settings":settings_dict(),"version":SOFTWARE_VERSION})
         if p == "/api/me":
             row = self.require_auth()
             session = cookie_session(self)
             if row: json_response(self,200,{"user":user_dict(row),"csrf_token":session["csrf_token"]})
             return
-        if p == "/api/admin/backup":
-            current = self.require_auth(permission="backup_manage")
-            if not current: return
-            path = create_database_backup("manual")
-            with db() as conn:
-                audit_event(conn,current,"download","backup",path.name,"Manuelle Datenbanksicherung erstellt")
-            raw = path.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type","application/vnd.sqlite3")
-            self.send_header("Content-Disposition",f'attachment; filename="{path.name}"')
-            self.send_header("Content-Length",str(len(raw)))
-            self.send_header("Cache-Control","no-store")
-            security_headers(self)
-            self.end_headers(); self.wfile.write(raw); return
-        if p == "/api/audit":
-            if not self.require_auth(permission="system_view"): return
-            query = parse_qs(urlparse(self.path).query)
-            try: limit = min(500,max(1,int(query.get("limit",[200])[0])))
-            except ValueError: limit = 200
-            with db() as conn:
-                rows = conn.execute("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?",(limit,)).fetchall()
-            return json_response(self,200,{"entries":[dict(row) for row in rows]})
-        if p == "/api/system-status":
-            if not self.require_auth(permission="system_view"): return
-            return json_response(self,200,{"status":system_status_dict()})
-        if p == "/api/usage":
-            if not self.require_auth(permission="system_view"): return
-            query = parse_qs(urlparse(self.path).query)
-            try: days = int(query.get("days",["30"])[0])
-            except ValueError: days = 30
-            days = days if days in {7,30,90,365} else 30
-            since = (datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
-            with db() as conn:
-                rows = conn.execute("""SELECT id,template_id,template_name,user_id,username,
-                    project_id,project_key,output_method,created_at FROM template_usage
-                    WHERE created_at>=? ORDER BY id DESC LIMIT 5000""",(since,)).fetchall()
-            template_counts,method_counts,user_counts = {},{},{}
-            for row in rows:
-                template_counts[row["template_name"]] = template_counts.get(row["template_name"],0)+1
-                method_counts[row["output_method"]] = method_counts.get(row["output_method"],0)+1
-                user_counts[row["username"]] = user_counts.get(row["username"],0)+1
-            ranked = lambda values: [{"name":name,"count":count} for name,count in sorted(values.items(),key=lambda item:(-item[1],item[0].lower()))]
-            return json_response(self,200,{"days":days,"total":len(rows),
-                "by_template":ranked(template_counts),"by_method":ranked(method_counts),
-                "by_user":ranked(user_counts),"recent":[dict(row) for row in rows[:100]]})
-        if p in {"/api/templates/export/json","/api/templates/export/eml"}:
-            current = self.require_auth(permission="templates_export_all")
-            if not current: return
-            with db() as conn:
-                rows = accessible_template_rows(conn,current)
-                audit_event(conn,current,"export","templates","all",
-                            f"{len(rows)} zugängliche Vorlagen exportiert")
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            if p.endswith("/json"):
-                payload = json.dumps({"schema_version":"1.3","software_version":SOFTWARE_VERSION,
-                    "exported_at":now_iso(),"templates":[template_export_dict(row) for row in rows]},
-                    ensure_ascii=False,indent=2).encode("utf-8")
-                return binary_response(self,payload,"application/json; charset=utf-8",
-                                       f"Wieseke-Mailvorlagen-{stamp}.json")
-            output = io.BytesIO()
-            with zipfile.ZipFile(output,"w",compression=zipfile.ZIP_DEFLATED) as archive:
-                for position,row in enumerate(rows,1):
-                    archive.writestr(f"{position:03d}-{safe_export_filename(row['name'])}.eml",template_eml_bytes(row))
-            return binary_response(self,output.getvalue(),"application/zip",
-                                   f"Wieseke-Mailvorlagen-EML-{stamp}.zip")
-        m = re.fullmatch(r"/api/templates/(\d+)/export/(json|eml)",p)
-        if m:
-            current = self.require_auth(permission="template_export")
-            if not current: return
-            template_id,export_type = int(m.group(1)),m.group(2)
-            with db() as conn:
-                accessible = {row["id"]:row for row in accessible_template_rows(conn,current)}
-                row = accessible.get(template_id)
-                if not row: return json_response(self,404,{"error":"Vorlage wurde nicht gefunden oder ist nicht freigegeben."})
-                audit_event(conn,current,"export","template",template_id,
-                            f"Vorlage als {export_type.upper()} exportiert")
-            filename = safe_export_filename(row["name"])
-            if export_type == "json":
-                payload = json.dumps({"schema_version":"1.3","software_version":SOFTWARE_VERSION,
-                    "exported_at":now_iso(),"template":template_export_dict(row)},
-                    ensure_ascii=False,indent=2).encode("utf-8")
-                return binary_response(self,payload,"application/json; charset=utf-8",f"{filename}.json")
-            return binary_response(self,template_eml_bytes(row),"message/rfc822",f"{filename}.eml")
-        m = re.fullmatch(r"/api/templates/(\d+)/versions",p)
-        if m:
-            if not self.require_auth(permission="templates_manage"): return
-            with db() as conn:
-                rows = conn.execute("""SELECT v.id,v.template_id,v.version_no,v.created_at,
-                    v.created_by,u.username FROM template_versions v LEFT JOIN users u ON u.id=v.created_by
-                    WHERE v.template_id=? ORDER BY v.version_no DESC""",(int(m.group(1)),)).fetchall()
-            return json_response(self,200,{"versions":[dict(row) for row in rows]})
-        if p == "/api/settings":
-            if not self.require_auth(): return
-            return json_response(self,200,{"settings":settings_dict(),"software":software_info_dict()})
-        if p == "/api/variables":
-            if not self.require_auth(): return
-            with db() as conn:
-                rows = conn.execute("SELECT * FROM variables ORDER BY sort_order,id").fetchall()
-            return json_response(self,200,{"variables":[variable_dict(r) for r in rows]})
-        m=re.fullmatch(r"/api/document-templates/(\d+)/(analysis|download|versions)(?:/(\d+)/download)?",p)
-        if m:
-            current=self.require_auth()
-            if not current:return
-            permissions=set(permissions_from_row(current))
-            if not {"documents_create","document_templates_manage"}&permissions or (m.group(2)!="analysis" and "document_templates_manage" not in permissions):
-                return json_response(self,403,{"error":"Für diese Funktion fehlt die Berechtigung."})
-            with db() as conn:
-                template=conn.execute("SELECT * FROM document_templates WHERE id=?",(int(m.group(1)),)).fetchone()
-                if not template or (not template["active"] and "document_templates_manage" not in permissions):
-                    return json_response(self,404,{"error":"Vorlage wurde nicht gefunden."})
-                if m.group(2)=="analysis":return json_response(self,200,document_analysis(conn,template["docx_blob"]))
-                if m.group(2)=="versions":
-                    if m.group(3):
-                        template=conn.execute("SELECT original_filename,docx_blob FROM document_template_versions WHERE id=? AND template_id=?",(int(m.group(3)),template["id"])).fetchone()
-                        if not template:return json_response(self,404,{"error":"Version wurde nicht gefunden."})
-                    else:
-                        rows=conn.execute("SELECT id,version_no,original_filename,created_at FROM document_template_versions WHERE template_id=? ORDER BY version_no DESC",(template["id"],)).fetchall()
-                        return json_response(self,200,{"versions":[dict(row) for row in rows]})
-            return binary_response(self,template["docx_blob"],"application/vnd.openxmlformats-officedocument.wordprocessingml.document",template["original_filename"])
-        m=re.fullmatch(r"/api/project-documents/(\d+)/download",p)
-        if m:
-            current=self.require_auth(permission="projects_view")
-            if not current:return
-            if not {"documents_create","document_templates_manage"}&set(permissions_from_row(current)):
-                return json_response(self,403,{"error":"Für Dokumente fehlt die Berechtigung."})
-            with db() as conn:row=conn.execute("SELECT * FROM project_documents WHERE id=?",(int(m.group(1)),)).fetchone()
-            if not row:return json_response(self,404,{"error":"Dokument wurde nicht gefunden."})
-            return binary_response(self,row["content"],row["content_type"],row["filename"])
-        if p in {"/api/document-templates","/api/document-blocks","/api/documents/pdf-status"}:
-            current=self.require_auth()
-            if not current:return
-            if not {"documents_create","document_templates_manage"}&set(permissions_from_row(current)):
-                return json_response(self,403,{"error":"Für Dokumente fehlt die Berechtigung."})
-        if p == "/api/document-templates":
-            with db() as conn:
-                rows=conn.execute("SELECT id,name,description,original_filename,placeholder_keys_json,active,created_at,updated_at FROM document_templates ORDER BY name,id").fetchall()
-            return json_response(self,200,{"templates":[document_template_dict(row) for row in rows]})
-        if p == "/api/bid/import-template":
-            if not self.require_auth(permission="bid_questions_manage"): return
-            with db() as conn:
-                payload = bid_workbooks.make_template(conn)
-            return binary_response(self,payload,bid_workbooks.MIME,"Bieterfragen_Vorlage.xlsx")
-        if p == "/api/document-blocks":
-            with db() as conn:
-                rows=conn.execute("SELECT * FROM document_text_blocks ORDER BY sort_order,id").fetchall()
-            return json_response(self,200,{"blocks":[document_block_dict(row) for row in rows]})
-        if p == "/api/documents/pdf-status":
-            return json_response(self,200,{"available":bool(office_converter_path()),
-                "message":"PDF-Export ist verfügbar." if office_converter_path() else "PDF-Export benötigt LibreOffice auf dem Server."})
-        if p == "/api/users":
-            current = self.require_auth(permission="users_manage")
-            if not current: return
-            with db() as conn:
-                rows = conn.execute("""SELECT u.*,r.name AS role_name,
-                    r.permissions_json,r.all_templates,r.all_categories FROM users u
-                    LEFT JOIN roles r ON r.id=u.role_id ORDER BY u.username""").fetchall()
-            return json_response(self,200,{"users":[user_dict(r) for r in rows]})
-        if p == "/api/roles":
-            current = self.require_auth()
-            if not current: return
-            current_permissions = permissions_from_row(current)
-            if not ({"roles_manage","users_manage"} & set(current_permissions)):
-                return json_response(self,403,{"error":"Für diese Funktion fehlt die erforderliche Berechtigung."})
-            with db() as conn:
-                rows = conn.execute("SELECT * FROM roles ORDER BY name").fetchall()
-                roles = []
-                for row in rows:
-                    if ("roles_manage" not in current_permissions
-                            and not set(json.loads(row["permissions_json"] or "[]")).issubset(set(current_permissions))):
-                        continue
-                    category_ids = [item[0] for item in conn.execute(
-                        "SELECT category_id FROM role_categories WHERE role_id=? ORDER BY category_id",
-                        (row["id"],)).fetchall()]
-                    roles.append(role_dict(row,category_ids))
-            return json_response(self,200,{"roles":roles,"permission_catalog":PERMISSIONS})
-        m = re.fullmatch(r"/api/projects/(\d+)/workspace",p)
-        if m:
-            current = self.require_auth(permission="projects_view")
-            if not current: return
-            project_id = int(m.group(1))
-            permissions = set(permissions_from_row(current))
-            with db() as conn:
-                project = conn.execute("SELECT id,project_key,name FROM projects WHERE id=?",(project_id,)).fetchone()
-                if not project: return json_response(self,404,{"error":"Projekt wurde nicht gefunden."})
-                email_rows = conn.execute("""SELECT pe.*,u.username FROM project_emails pe
-                    LEFT JOIN users u ON u.id=pe.created_by WHERE pe.project_id=?
-                    ORDER BY pe.id DESC""",(project_id,)).fetchall()
-                question_rows = []
-                document_rows=[]
-                if {"documents_create","document_templates_manage"}&permissions:
-                    document_rows=conn.execute("""SELECT d.id,d.template_name,d.filename,d.content_type,
-                        LENGTH(d.content) AS size,d.created_at,u.username FROM project_documents d
-                        LEFT JOIN users u ON u.id=d.created_by WHERE d.project_id=? ORDER BY d.id DESC""",(project_id,)).fetchall()
-                if "bid_questions_view" in permissions or "bid_questions_manage" in permissions:
-                    question_rows = conn.execute("""SELECT bq.*,p.project_key,p.name AS project_name
-                        FROM bid_questions bq JOIN projects p ON p.id=bq.project_id
-                        WHERE bq.project_id=? ORDER BY bq.id DESC""",(project_id,)).fetchall()
-            return json_response(self,200,{"project":dict(project),
-                "emails":[{"id":row["id"],"project_id":row["project_id"],
-                    "template_id":row["template_id"],"template_name":row["template_name"],
-                    "recipient":row["recipient"],"cc":row["cc"],"subject":row["subject"],
-                    "body_text":row["body_text"],"body_html":row["body_html"],
-                    "created_at":row["created_at"],"username":row["username"] or "System"}
-                    for row in email_rows],
-                "bid_questions":[bid_question_dict(row) for row in question_rows],
-                "documents":[dict(row) for row in document_rows]})
-        if p == "/api/bid/categories":
-            current = self.require_auth()
-            if not current: return
-            if not ({"bid_questions_view","bid_questions_manage","bid_answers_manage"} & set(permissions_from_row(current))):
-                return json_response(self,403,{"error":"Für diese Funktion fehlt die erforderliche Berechtigung."})
-            with db() as conn:
-                rows=conn.execute("SELECT * FROM bid_question_categories ORDER BY sort_order,name").fetchall()
-            return json_response(self,200,{"categories":[bid_category_dict(row) for row in rows]})
-        if p == "/api/bid/topics":
-            current = self.require_auth()
-            if not current: return
-            if not ({"bid_questions_view","bid_questions_manage","bid_answers_manage"} & set(permissions_from_row(current))):
-                return json_response(self,403,{"error":"Für diese Funktion fehlt die erforderliche Berechtigung."})
-            with db() as conn:
-                rows=conn.execute("""SELECT * FROM bid_question_topics
-                    ORDER BY category_id,sort_order,name""").fetchall()
-            return json_response(self,200,{"topics":[bid_topic_dict(row) for row in rows]})
-        if p == "/api/bid/answers":
-            current = self.require_auth()
-            if not current: return
-            if not ({"bid_questions_view","bid_questions_manage","bid_answers_manage"} & set(permissions_from_row(current))):
-                return json_response(self,403,{"error":"Für diese Funktion fehlt die erforderliche Berechtigung."})
-            with db() as conn:
-                rows=conn.execute("""SELECT a.*,t.category_id,t.name AS topic_name,c.name AS category_name
-                    FROM standard_bid_answers a JOIN bid_question_topics t ON t.id=a.topic_id
-                    JOIN bid_question_categories c ON c.id=t.category_id
-                    ORDER BY c.sort_order,t.sort_order,a.short_question""").fetchall()
-                variant_rows=conn.execute("""SELECT * FROM standard_bid_answer_variants
-                    ORDER BY standard_answer_id,decision,sort_order,id""").fetchall()
-            variants_by_answer={}
-            for variant in variant_rows:
-                variants_by_answer.setdefault(variant["standard_answer_id"],[]).append({
-                    "id":variant["id"],"decision":variant["decision"],"answer":variant["answer"],
-                    "short_description":variant["short_description"],"sort_order":variant["sort_order"]})
-            return json_response(self,200,{"answers":[bid_answer_dict(
-                row,variants_by_answer.get(row["id"],[])) for row in rows]})
-        if p == "/api/bidders":
-            current=self.require_auth()
-            if not current:return
-            if not ({"projects_view","bid_questions_view","bid_questions_manage"} & set(permissions_from_row(current))):
-                return json_response(self,403,{"error":"Für diese Funktion fehlt die erforderliche Berechtigung."})
-            with db() as conn:
-                rows=conn.execute("SELECT * FROM bidders ORDER BY active DESC,bidder COLLATE NOCASE").fetchall()
-            return json_response(self,200,{"bidders":[bidder_dict(row) for row in rows]})
-        if p == "/api/bidders/example-json":
-            current=self.require_auth()
-            if not current:return
-            if "projects_view" not in permissions_from_row(current):
-                return json_response(self,403,{"error":"Für diese Funktion fehlt die erforderliche Berechtigung."})
-            payload=json.dumps({"schema_version":"1.0","bidders":[{
-                "bidder":"Bieter Musterstadt","company_name":"Muster GmbH",
-                "street":"Musterstraße 1","postal_code":"12345","city":"Musterstadt",
-                "country":"Deutschland","website":"https://example.com","comment":"Optionaler Kommentar"}]},
-                ensure_ascii=False,indent=2).encode("utf-8")
-            self.send_response(200);self.send_header("Content-Type","application/json; charset=utf-8")
-            self.send_header("Content-Disposition",'attachment; filename="bieter-beispiel.json"')
-            self.send_header("Content-Length",str(len(payload)));self.end_headers();self.wfile.write(payload);return
-        if p == "/api/bid/questions":
-            current = self.require_auth()
-            if not current: return
-            if not ({"bid_questions_view","bid_questions_manage"} & set(permissions_from_row(current))):
-                return json_response(self,403,{"error":"Für diese Funktion fehlt die erforderliche Berechtigung."})
-            with db() as conn:
-                rows=conn.execute("""SELECT bq.*,p.project_key,p.name AS project_name
-                    FROM bid_questions bq JOIN projects p ON p.id=bq.project_id
-                    ORDER BY bq.id DESC""").fetchall()
-            return json_response(self,200,{"questions":[bid_question_dict(row) for row in rows]})
-        if p == "/api/projects":
-            if not self.require_auth(permission="projects_view"): return
-            with db() as conn:
-                rows = conn.execute("SELECT id,project_key,name,data_json,imported_at,archived FROM projects ORDER BY archived,project_key DESC").fetchall()
-            return json_response(self,200,{"projects":[
-                {"id":r["id"],"project_key":r["project_key"],"name":r["name"],
-                 "data":json.loads(r["data_json"]),"imported_at":r["imported_at"],"archived":bool(r["archived"])} for r in rows]})
-        if p == "/api/categories":
-            current = self.require_auth()
-            if not current: return
-            with db() as conn:
-                rows = accessible_category_rows(conn,current)
-            return json_response(self,200,{"categories":[category_dict(row) for row in rows]})
-        if p == "/api/templates":
-            current = self.require_auth()
-            if not current: return
-            current_permissions = permissions_from_row(current)
-            if not ({"email_create","templates_manage","roles_manage"} & set(current_permissions)):
-                return json_response(self,403,{"error":"Für diese Funktion fehlt die erforderliche Berechtigung."})
-            with db() as conn:
-                rows = accessible_template_rows(conn,current)
-            return json_response(self,200,{"templates":[
-                {"id":r["id"],"name":r["name"],"category":r["category"],"category_id":r["category_id"],"subject":r["subject"],
-                 "body":r["body"],"body_html":r["body_html"] or plain_text_to_html(r["body"]),
-                 "fields":json.loads(r["fields_json"]),"active":bool(r["active"]),
-                 "notice_text":r["notice_text"],"notice_mode":r["notice_mode"],
-                 "notice_enabled":bool(r["notice_enabled"]),
-                 "notice_html":r["notice_html"] or plain_text_to_html(r["notice_text"]),
-                 "notice_button_label":r["notice_button_label"] or "Hinweistext gesehen",
-                 "sort_order":r["sort_order"],"archived":bool(r["archived"])}
-                for r in rows]})
-        if p == "/api/favorites":
-            current = self.require_auth(permission="email_create")
-            if not current: return
-            with db() as conn:
-                accessible_ids={row["id"] for row in accessible_template_rows(conn,current)}
-                favorite_ids=[row[0] for row in conn.execute(
-                    "SELECT template_id FROM favorite_templates WHERE user_id=? ORDER BY created_at",
-                    (current["id"],)).fetchall() if row[0] in accessible_ids]
-            return json_response(self,200,{"template_ids":favorite_ids})
-        if p == "/api/dashboard":
-            current = self.require_auth(permission="email_create")
-            if not current: return
-            with db() as conn:
-                category_rows = accessible_category_rows(conn,current)
-                allowed_categories = {row["id"]:category_dict(row) for row in category_rows}
-                template_rows = accessible_template_rows(conn,current)
-                templates_by_category = {}
-                for row in template_rows:
-                    templates_by_category.setdefault(row["category_id"],[]).append({
-                        "id":row["id"],"name":row["name"]})
-                tile_rows = conn.execute("""SELECT * FROM dashboard_tiles
-                    WHERE user_id=? ORDER BY sort_order,id""",(current["id"],)).fetchall()
-                tiles = [{"id":row["id"],"category":allowed_categories[row["category_id"]],
-                          "templates":templates_by_category.get(row["category_id"],[]),
-                          "sort_order":row["sort_order"]}
-                         for row in tile_rows if row["category_id"] in allowed_categories]
-                quicklink_rows = conn.execute("""SELECT id,title,url,link_type,target,sort_order FROM dashboard_quicklinks
-                    WHERE user_id=? ORDER BY sort_order,id""",(current["id"],)).fetchall()
-            return json_response(self,200,{"tiles":tiles,"show_favorites":bool(current["show_favorites"]),
-                "show_quicklinks":bool(current["show_quicklinks"]),
-                "quicklinks":[dict(row) for row in quicklink_rows]})
+        if administration_routes.get(self, p, None) is not False: return
+        if mail_routes.get(self, p, None) is not False: return
+        if documents_routes.get(self, p, None) is not False: return
+        if bids_routes.get(self, p, None) is not False: return
+        if projects_routes.get(self, p, None) is not False: return
         self.send_error(404)
 
     def create_project_via_api(self):
@@ -1820,7 +1540,7 @@ class Handler(BaseHTTPRequestHandler):
         if length<=0:return fail(400,"Ein JSON-Projekt ist erforderlich.")
         try:
             payload=json.loads(self.rfile.read(length).decode("utf-8-sig"))
-            if not isinstance(payload,dict) or payload.get("schema_version")!="1.0":raise ValueError("schema_version muss 1.0 sein.")
+            payload = project_service.validate_project(payload, require_schema=True)
             project=payload.get("projekt")
             if not isinstance(project,dict):raise ValueError("projekt muss ein Objekt sein.")
             for field,maximum in [("id",200),("bezeichnung",1000)]:
@@ -1866,7 +1586,7 @@ class Handler(BaseHTTPRequestHandler):
             username = str(data.get("username", "")).strip()
             password = str(data.get("password", ""))
             next_path = str(data.get("next", "/"))
-            if not (re.fullmatch(r"/vorlage/\d+",next_path) or next_path == "/excel-import"):
+            if not (re.fullmatch(r"/(?:vorlage/\d+|app/[a-z-]+(?:/\d+)?)",next_path) or next_path == "/excel-import"):
                 next_path = "/"
             with db() as conn:
                 row, status, retry_after = authenticate_user(conn,username,password)
@@ -1901,6 +1621,8 @@ class Handler(BaseHTTPRequestHandler):
             with db() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 target = user_with_role(conn,user_id=target_id,active_only=True)
+                error = self.target_account_error(conn, current, target_id)
+                if error: return json_response(self,403,{"error":error})
                 if p.endswith("/revoke"):
                     conn.execute("UPDATE project_api_keys SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL",(now_iso(),target_id))
                     audit_event(conn,current,"revoke","api-key",target_id,"Projekt-API-Schlüssel gesperrt")
@@ -1942,30 +1664,11 @@ class Handler(BaseHTTPRequestHandler):
             if c.get("wve_session"): SESSIONS.pop(c["wve_session"].value,None)
             return json_response(self,200,{"ok":True},{"Set-Cookie":"wve_session=; Max-Age=0; Path=/; SameSite=Strict"})
 
-        if p == "/api/usage":
-            current = self.require_auth(permission="email_create")
-            if not current: return
-            try:
-                template_id = int(data.get("template_id",0))
-                project_id = int(data["project_id"]) if data.get("project_id") else None
-            except (TypeError,ValueError):
-                return json_response(self,400,{"error":"Vorlage oder Projekt ist ungültig."})
-            output_method = str(data.get("output_method","")).strip().lower()
-            if output_method not in {"eml","mailto","copy"}:
-                return json_response(self,400,{"error":"Die Ausgabeart ist ungültig."})
-            with db() as conn:
-                accessible = {row["id"]:row for row in accessible_template_rows(conn,current)}
-                template = accessible.get(template_id)
-                if not template:
-                    return json_response(self,404,{"error":"Vorlage wurde nicht gefunden oder ist nicht freigegeben."})
-                project = conn.execute("SELECT id,project_key FROM projects WHERE id=?",(project_id,)).fetchone() if project_id else None
-                conn.execute("""INSERT INTO template_usage
-                    (template_id,template_name,user_id,username,project_id,project_key,output_method,created_at)
-                    VALUES (?,?,?,?,?,?,?,?)""",(
-                    template["id"],template["name"],current["id"],current["username"],
-                    project["id"] if project else None,project["project_key"] if project else "",
-                    output_method,now_iso()))
-            return json_response(self,201,{"ok":True})
+        if administration_routes.post(self, p, data) is not False: return
+        if mail_routes.post(self, p, data) is not False: return
+        if projects_routes.post(self, p, data) is not False: return
+        if bids_routes.post(self, p, data) is not False: return
+        if documents_routes.post(self, p, data) is not False: return
 
         if p == "/api/admin/restore":
             current = self.require_auth(permission="backup_manage")
@@ -1986,6 +1689,9 @@ class Handler(BaseHTTPRequestHandler):
                 found = {row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 if integrity != "ok" or not required.issubset(found):
                     source.close(); return json_response(self,400,{"error":"Die Datei ist keine gültige Sicherung dieser Anwendung."})
+                try: migrations.inspect_database(temp_path, SCHEMA_VERSION)
+                except RuntimeError as error:
+                    source.close(); return json_response(self,400,{"error":str(error)})
                 target = sqlite3.connect(DB_PATH)
                 try: source.backup(target)
                 finally: target.close(); source.close()
@@ -1995,45 +1701,36 @@ class Handler(BaseHTTPRequestHandler):
                 if temp_path: temp_path.unlink(missing_ok=True)
             return json_response(self,200,{"ok":True,"safety_backup":safety.name})
 
-        m = re.fullmatch(r"/api/templates/(\d+)/versions/(\d+)/restore",p)
-        if m:
-            current = self.require_auth(permission="templates_manage")
-            if not current: return
-            template_id,version_id = map(int,m.groups())
-            with db() as conn:
-                version = conn.execute("SELECT * FROM template_versions WHERE id=? AND template_id=?",
-                                       (version_id,template_id)).fetchone()
-                if not version: return json_response(self,404,{"error":"Vorlagenversion wurde nicht gefunden."})
-                snapshot = json.loads(version["snapshot_json"])
-                category_id = snapshot.get("category_id")
-                if category_id and not conn.execute("SELECT 1 FROM mail_categories WHERE id=?", (category_id,)).fetchone():
-                    return json_response(self,409,{"error":"Die in dieser Version verwendete Mailkategorie existiert nicht mehr."})
-                columns = ["name","category","category_id","subject","body","body_html","fields_json","active",
-                           "notice_text","notice_mode","notice_enabled","notice_html","notice_button_label","sort_order","archived"]
-                conn.execute(f"UPDATE templates SET {','.join(column+'=?' for column in columns)},updated_at=? WHERE id=?",
-                             [snapshot.get(column) for column in columns]+[now_iso(),template_id])
-                new_version = save_template_version(conn,template_id,current["id"])
-                audit_event(conn,current,"restore","template",template_id,
-                            f"Version {version['version_no']} als Version {new_version} wiederhergestellt")
-            return json_response(self,200,{"ok":True,"version_no":new_version})
 
         if p == "/api/recover":
             username = str(data.get("username","")).strip()
             code = str(data.get("recovery_code","")).strip()
             password = str(data.get("new_password",""))
             with db() as conn:
+                conn.execute("BEGIN IMMEDIATE")
                 row = conn.execute("SELECT * FROM users WHERE username=? AND active=1",(username,)).fetchone()
+                if not api_rate_allowed("recover:"+self.client_address[0],30):
+                    return json_response(self,429,{"error":"Zu viele Versuche. Bitte später erneut versuchen."})
+                if row and row["recovery_locked_until"] and datetime.fromisoformat(row["recovery_locked_until"]) > datetime.now(timezone.utc):
+                    return json_response(self,429,{"error":"Wiederherstellung vorübergehend gesperrt. Bitte später erneut versuchen."})
                 err = validate_user_password(password, bool(row and row["password_policy_exempt"]))
                 if err: return json_response(self,400,{"error":err})
                 ok = False
                 if row:
                     try: ok = ph.verify(row["recovery_hash"], code)
                     except VerifyMismatchError: ok = False
-                if not ok: return json_response(self,400,{"error":"Wiederherstellungsdaten sind ungültig."})
+                if not ok:
+                    if row:
+                        attempts = row["failed_recovery_attempts"] + 1
+                        duration = LOGIN_LOCK_SECONDS.get(attempts, 1800 if attempts >= 9 else 0)
+                        until = (datetime.now(timezone.utc)+timedelta(seconds=duration)).isoformat() if duration else None
+                        conn.execute("UPDATE users SET failed_recovery_attempts=?,recovery_locked_until=? WHERE id=?",(attempts,until,row["id"]))
+                    return json_response(self,400,{"error":"Wiederherstellungsdaten sind ungültig."})
                 new_code = "-".join([secrets.token_hex(2).upper() for _ in range(4)])
                 conn.execute("""UPDATE users SET password_hash=?,recovery_hash=?,must_change=0,
-                    failed_login_attempts=0,locked_until=NULL WHERE id=?""",
+                    failed_login_attempts=0,locked_until=NULL,failed_recovery_attempts=0,recovery_locked_until=NULL WHERE id=?""",
                     (ph.hash(password),ph.hash(new_code),row["id"]))
+                revoke_credentials(conn, row["id"])
             return json_response(self,200,{"ok":True,"new_recovery_code":new_code})
 
         if p == "/api/change-password":
@@ -2049,603 +1746,29 @@ class Handler(BaseHTTPRequestHandler):
             with db() as conn:
                 conn.execute("UPDATE users SET password_hash=?,recovery_hash=?,must_change=0 WHERE id=?",
                              (ph.hash(new),ph.hash(new_code),row["id"]))
-            return json_response(self,200,{"ok":True,"new_recovery_code":new_code})
+                revoke_credentials(conn, row["id"], keys=False)
+                token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+                SESSIONS[token] = {"user_id":row["id"],"expires":datetime.now(timezone.utc)+timedelta(hours=SESSION_HOURS),"csrf_token":csrf}
+            secure = "; Secure" if SECURE_COOKIES else ""
+            return json_response(self,200,{"ok":True,"new_recovery_code":new_code,"csrf_token":csrf},
+                                 {"Set-Cookie":f"wve_session={token}; HttpOnly; SameSite=Strict; Path=/{secure}"})
 
-        if p == "/api/users":
-            current = self.require_auth(permission="users_manage")
-            if not current: return
-            username = str(data.get("username","")).strip()
-            first = str(data.get("first_name","")).strip()
-            last = str(data.get("last_name","")).strip()
-            email = str(data.get("email","")).strip()
-            policy_exempt = 1 if data.get("password_policy_exempt") else 0
-            must_change = 1 if data.get("must_change", True) else 0
-            try: role_id = int(data.get("role_id",0))
-            except (TypeError,ValueError): role_id = 0
-            with db() as conn:
-                selected_role = conn.execute("SELECT * FROM roles WHERE id=?",(role_id,)).fetchone()
-            if not username or not first or not last or not selected_role:
-                return json_response(self,400,{"error":"Bitte alle Pflichtfelder korrekt ausfüllen."})
-            selected_permissions = set(json.loads(selected_role["permissions_json"]))
-            if not selected_permissions.issubset(set(permissions_from_row(current))):
-                return json_response(self,403,{"error":"Sie dürfen keine Rolle mit weitergehenden Berechtigungen zuweisen."})
-            legacy_role = "admin" if "roles_manage" in selected_permissions else "user"
-            password = secrets.token_urlsafe(10) + "A1"
-            recovery = "-".join([secrets.token_hex(2).upper() for _ in range(4)])
-            try:
-                with db() as conn:
-                    cur = conn.execute("""INSERT INTO users
-                    (username,first_name,last_name,email,password_hash,recovery_hash,role,active,must_change,created_at,role_id,password_policy_exempt)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (username,first,last,email,ph.hash(password),ph.hash(recovery),legacy_role,1,must_change,now_iso(),role_id,policy_exempt))
-                    audit_event(conn,current,"create","user",cur.lastrowid,f"Benutzer {username} angelegt")
-            except sqlite3.IntegrityError:
-                return json_response(self,409,{"error":"Der Benutzername ist bereits vergeben."})
-            return json_response(self,201,{"ok":True,"username":username,"temporary_password":password,"recovery_code":recovery})
 
-        if p == "/api/projects":
-            user = self.require_auth(permission="projects_manage")
-            if not user: return
-            payload = data.get("data", data)
-            try:
-                project_key = str(payload["projekt"]["id"]).strip()
-                name = str(payload["projekt"]["bezeichnung"]).strip()
-            except Exception:
-                return json_response(self,400,{"error":"JSON benötigt projekt.id und projekt.bezeichnung."})
-            if not project_key or not name:
-                return json_response(self,400,{"error":"Projekt-ID und Projektbezeichnung dürfen nicht leer sein."})
-            with db() as conn:
-                existing = conn.execute("SELECT id FROM projects WHERE project_key=?",(project_key,)).fetchone()
-                conn.execute("""INSERT INTO projects(project_key,name,data_json,imported_at,imported_by,archived)
-                    VALUES(?,?,?,?,?,0)
-                    ON CONFLICT(project_key) DO UPDATE SET name=excluded.name,data_json=excluded.data_json,
-                    imported_at=excluded.imported_at,imported_by=excluded.imported_by,archived=0""",
-                    (project_key,name,json.dumps(payload,ensure_ascii=False),now_iso(),user["id"]))
-                project_id = (existing["id"] if existing else conn.execute("SELECT id FROM projects WHERE project_key=?",(project_key,)).fetchone()[0])
-                audit_event(conn,user,"update" if existing else "create","project",project_id,
-                            f"Projekt {project_key} {'aktualisiert' if existing else 'angelegt'}")
-            return json_response(self,200,{"ok":True,"project_key":project_key})
 
-        m = re.fullmatch(r"/api/projects/(\d+)/emails",p)
-        if m:
-            current = self.require_auth(permission="email_create")
-            if not current: return
-            if "projects_view" not in permissions_from_row(current):
-                return json_response(self,403,{"error":"Für die Projektspeicherung fehlt die Projektberechtigung."})
-            project_id = int(m.group(1))
-            subject = str(data.get("subject","")).strip()
-            try: body_html = sanitize_email_html(data.get("body_html",""),data.get("body_text",""))
-            except ValueError as error: return json_response(self,400,{"error":str(error)})
-            body_text = html_to_plain_text(body_html)
-            if not subject or not body_text:
-                return json_response(self,400,{"error":"Betreff und E-Mailtext dürfen nicht leer sein."})
-            if len(subject)>1000 or len(body_text)>100000 or len(body_html)>email_images.MAX_HTML:
-                return json_response(self,400,{"error":"Die E-Mail ist für die Projektspeicherung zu groß."})
-            try: template_id = int(data["template_id"]) if data.get("template_id") else None
-            except (TypeError,ValueError): template_id = None
-            with db() as conn:
-                project=conn.execute("SELECT id,project_key FROM projects WHERE id=? AND archived=0",(project_id,)).fetchone()
-                if not project:return json_response(self,404,{"error":"Das aktive Projekt wurde nicht gefunden."})
-                cur=conn.execute("""INSERT INTO project_emails
-                    (project_id,template_id,template_name,recipient,cc,subject,body_text,body_html,created_by,created_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?)""",(project_id,template_id,
-                    str(data.get("template_name","")).strip()[:300],str(data.get("recipient","")).strip()[:2000],
-                    str(data.get("cc","")).strip()[:2000],subject,body_text,body_html,current["id"],now_iso()))
-                audit_event(conn,current,"create","project-email",cur.lastrowid,
-                            f"E-Mail in Projekt {project['project_key']} gespeichert")
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
-        if p in {"/api/bid/xlsx/preview", "/api/bid/xlsx/import"}:
-            current = self.require_auth(permission="bid_questions_manage")
-            if not current: return
-            try:
-                raw = base64.b64decode(str(data.get("content_base64", "")), validate=True)
-                project_id, year = int(data.get("project_id") or 0), int(data.get("year") or 0)
-                with db() as conn:
-                    # Validation and insertion share a write lock. A category
-                    # changed after the preview is rechecked before any insert.
-                    if p.endswith("/import"): conn.execute("BEGIN IMMEDIATE")
-                    preview = bid_workbooks.preview_import(conn, raw, project_id, year)
-                    if p.endswith("/preview"): return json_response(self,200,preview)
-                    if not preview["valid"]:
-                        return json_response(self,400,{"error":"Die Datei enthält Fehler. Bitte die Vorschau erneut prüfen.","preview":preview})
-                    ids = bid_workbooks.commit_import(conn,preview,current["id"],now_iso())
-                    audit_event(conn,current,"import","bid-question","xlsx",f"{len(ids)} Bieterfrage(n), {preview['duplicates']} Duplikate übersprungen")
-                return json_response(self,201,{"created":len(ids),"ids":ids,"skipped":preview["duplicates"]})
-            except (ValueError, TypeError) as error:
-                return json_response(self,400,{"error":str(error)})
-        if p == "/api/email/images":
-            current=self.require_auth()
-            if not current:return
-            if not {"email_create","templates_manage"} & set(permissions_from_row(current)):
-                return json_response(self,403,{"error":"Für diese Funktion fehlt die Berechtigung."})
-            try:
-                raw=base64.b64decode(str(data.get("content_base64","")),validate=True)
-                content,subtype,width,height=email_images.normalize_image(raw)
-                return json_response(self,200,{"src":email_images.data_url(content,subtype),"width":width,"height":height,"size":len(content)})
-            except (ValueError,TypeError) as error:return json_response(self,400,{"error":str(error)})
-        if p == "/api/email/eml":
-            if not self.require_auth(permission="email_create"):return
-            try:
-                body_html=sanitize_email_html(data.get("body_html",""),data.get("body_text",""))
-                subject=str(data.get("subject",""))[:1000]
-                content=email_images.build_eml(subject,html_to_plain_text(body_html),body_html,
-                    str(data.get("recipient",""))[:4000],str(data.get("cc",""))[:4000])
-                return binary_response(self,content,"message/rfc822",safe_export_filename(subject,"E-Mail")+".eml")
-            except ValueError as error:return json_response(self,400,{"error":str(error)})
-        if p == "/api/document-templates/inspect":
-            if not self.require_auth(permission="document_templates_manage"):return
-            try:
-                raw=base64.b64decode(str(data.get("content_base64","")),validate=True)
-                with db() as conn:analysis=document_analysis(conn,raw)
-                return json_response(self,200,analysis)
-            except (ValueError,TypeError) as error:return json_response(self,400,{"error":str(error)})
-        if p == "/api/document-templates":
-            current=self.require_auth(permission="document_templates_manage")
-            if not current:return
-            name=str(data.get("name","")).strip(); filename=str(data.get("filename","")).strip()
-            try: raw=base64.b64decode(str(data.get("content_base64","")).split(",")[-1],validate=True)
-            except Exception:return json_response(self,400,{"error":"Die DOCX-Datei konnte nicht gelesen werden."})
-            if not name:return json_response(self,400,{"error":"Ein Vorlagenname ist erforderlich."})
-            if not filename.lower().endswith(".docx") or not raw or len(raw)>10_000_000:
-                return json_response(self,400,{"error":"Bitte eine DOCX-Datei mit höchstens 10 MB auswählen."})
-            try: placeholders=extract_docx_placeholders(raw)
-            except ValueError as error:return json_response(self,400,{"error":str(error)})
-            with db() as conn:
-                cur=conn.execute("""INSERT INTO document_templates(name,description,original_filename,docx_blob,placeholder_keys_json,active,created_at,updated_at)
-                    VALUES(?,?,?,?,?,?,?,?)""",(name,str(data.get("description","")).strip(),filename,raw,json.dumps(placeholders),1 if data.get("active",True) else 0,now_iso(),now_iso()))
-                audit_event(conn,current,"create","document_template",cur.lastrowid,name)
-                save_document_version(conn,cur.lastrowid,current["id"])
-            return json_response(self,201,{"id":cur.lastrowid,"placeholders":placeholders})
-        if p == "/api/document-blocks":
-            current=self.require_auth(permission="document_templates_manage")
-            if not current:return
-            key=str(data.get("key","")).strip(); name=str(data.get("name","")).strip()
-            if not re.fullmatch(r"[a-z][a-z0-9_]*",key) or not name:
-                return json_response(self,400,{"error":"Schlüssel (klein, ohne Leerzeichen) und Name sind erforderlich."})
-            try:
-                with db() as conn:
-                    order=conn.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM document_text_blocks").fetchone()[0]
-                    cur=conn.execute("""INSERT INTO document_text_blocks(block_key,name,category,content,active,sort_order,created_at,updated_at)
-                        VALUES(?,?,?,?,?,?,?,?)""",(key,name,str(data.get("category","")).strip(),str(data.get("content","")),1 if data.get("active",True) else 0,order,now_iso(),now_iso()))
-                    audit_event(conn,current,"create","document_block",cur.lastrowid,name)
-            except sqlite3.IntegrityError:return json_response(self,409,{"error":"Dieser Textbaustein-Schlüssel ist bereits vorhanden."})
-            return json_response(self,201,{"id":cur.lastrowid})
-        if p in {"/api/documents/generate","/api/documents/validate"}:
-            current=self.require_auth(permission="documents_create")
-            if not current:return
-            try:
-                template_id=int(data.get("template_id") or 0); project_id=int(data.get("project_id") or 0) or None
-            except (ValueError,TypeError):return json_response(self,400,{"error":"Vorlage oder Projekt ist ungültig."})
-            if project_id and "projects_view" not in permissions_from_row(current):
-                return json_response(self,403,{"error":"Für Projektdaten fehlt die Berechtigung."})
-            output_type=str(data.get("output","docx")); values=data.get("values",{})
-            if output_type not in {"docx","pdf"} or not isinstance(values,dict):
-                return json_response(self,400,{"error":"Ausgabeformat oder Eingabedaten sind ungültig."})
-            with db() as conn:
-                template=conn.execute("SELECT * FROM document_templates WHERE id=? AND active=1",(template_id,)).fetchone()
-                project=conn.execute("SELECT data_json FROM projects WHERE id=? AND archived=0",(project_id,)).fetchone() if project_id else None
-            if not template:return json_response(self,404,{"error":"Dokumentvorlage wurde nicht gefunden."})
-            if project_id and not project:return json_response(self,404,{"error":"Projekt wurde nicht gefunden."})
-            project_data=json.loads(project["data_json"]) if project else {}
-            project_data["kontakt"]={}
-            contact_index=data.get("contact_index")
-            if project and contact_index is not None:
-                try:
-                    contact_index=int(contact_index)
-                    if contact_index<0:raise ValueError()
-                    project_data["kontakt"]=project_data.get("kontakte",[])[contact_index]
-                except (ValueError,TypeError,IndexError):return json_response(self,400,{"error":"Kontakt wurde nicht gefunden. Bitte neu auswählen."})
-            if data.get("save_to_project") and not project_id:
-                return json_response(self,400,{"error":"Zum Speichern bitte ein Projekt auswählen."})
-            warnings=[]
-            if p.endswith("/validate"):
-                with db() as conn:analysis=document_analysis(conn,template["docx_blob"])
-                warnings=list(analysis["warnings"])
-                for key in analysis["placeholders"]:
-                    if key.startswith("benutzer.") or key=="kontakte":continue
-                    value=values.get(key)
-                    if key not in values:
-                        value=project_data
-                        for part in key.split('.'):
-                            value=value.get(part) if isinstance(value,dict) else None
-                    if value is None or value=="":warnings.append(f"Nicht ausgefüllt: {key}")
-            try: docx=render_document(template,values,project_data,current)
-            except ValueError as error:
-                if p.endswith("/validate"):return json_response(self,200,{"valid":False,"warnings":warnings,"error":str(error)})
-                return json_response(self,400,{"error":str(error)})
-            if p.endswith("/validate"):return json_response(self,200,{"valid":True,"warnings":warnings,"message":"Die Word-Datei konnte testweise erzeugt werden."})
-            safe_name=safe_export_filename(template["name"],"Dokument")
-            payload=docx; content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"; filename=f"{safe_name}.docx"
-            if output_type=="pdf":
-                converter=office_converter_path()
-                if not converter:return json_response(self,409,{"error":"PDF-Export ist auf diesem Server nicht verfügbar. Installieren Sie LibreOffice oder verwenden Sie den Word-Export."})
-                with tempfile.TemporaryDirectory() as directory:
-                    source=Path(directory)/filename; source.write_bytes(docx)
-                    try:
-                        result=subprocess.run([converter,f"-env:UserInstallation={(Path(directory)/'profile').as_uri()}","--headless","--convert-to","pdf","--outdir",directory,str(source)],capture_output=True,timeout=60)
-                    except (OSError,subprocess.TimeoutExpired):return json_response(self,500,{"error":"PDF-Konvertierung konnte nicht abgeschlossen werden. Bitte Word-Export verwenden."})
-                    pdf_path=source.with_suffix(".pdf")
-                    if result.returncode or not pdf_path.exists():return json_response(self,500,{"error":"Die PDF-Konvertierung ist fehlgeschlagen."})
-                    payload=pdf_path.read_bytes()
-                content_type="application/pdf";filename=f"{safe_name}.pdf"
-            with db() as conn:
-                conn.execute("INSERT INTO document_usage(template_id,template_name,user_id,project_id,output_method,created_at) VALUES(?,?,?,?,?,?)",(template_id,template["name"],current["id"],project_id,output_type,now_iso()))
-                if data.get("save_to_project"):
-                    # Check again after rendering/conversion; archiving may have
-                    # happened in another window while the file was generated.
-                    conn.execute("UPDATE projects SET imported_at=imported_at WHERE id=? AND archived=0",(project_id,))
-                    if not conn.execute("SELECT id FROM projects WHERE id=? AND archived=0",(project_id,)).fetchone():
-                        return json_response(self,409,{"error":"Projekt ist nicht mehr verfügbar. Bitte erneut auswählen."})
-                    cur=conn.execute("""INSERT INTO project_documents(project_id,template_id,template_name,filename,content_type,content,created_by,created_at)
-                        VALUES(?,?,?,?,?,?,?,?)""",(project_id,template_id,template["name"],filename,content_type,payload,current["id"],now_iso()))
-                    audit_event(conn,current,"create","project_document",cur.lastrowid,f"{filename} in Projekt {project_id}")
-                    return json_response(self,201,{"id":cur.lastrowid,"filename":filename,"project_id":project_id})
-            return binary_response(self,payload,content_type,filename)
-        if p in {"/api/bidders","/api/bidders/import"}:
-            current=self.require_auth(permission="projects_manage")
-            if not current:return
-            items=data.get("bidders",[data]) if isinstance(data,dict) else []
-            if not isinstance(items,list) or not items or len(items)>1000:
-                return json_response(self,400,{"error":"Bitte zwischen 1 und 1.000 Bieter übergeben."})
-            normalized=[]
-            for item in items:
-                if not isinstance(item,dict):return json_response(self,400,{"error":"Ein Bieterdatensatz ist ungültig."})
-                bidder=str(item.get("bidder","")).strip()[:300]
-                if not bidder:return json_response(self,400,{"error":"Jeder Datensatz benötigt das Pflichtfeld Bieter."})
-                normalized.append((bidder,str(item.get("company_name","")).strip()[:500],
-                    str(item.get("street","")).strip()[:500],str(item.get("postal_code","")).strip()[:30],
-                    str(item.get("city","")).strip()[:300],str(item.get("country","")).strip()[:200],
-                    str(item.get("website","")).strip()[:1000],str(item.get("comment","")).strip()[:10000],1 if item.get("active",True) else 0))
-            with db() as conn:
-                for item in normalized:
-                    conn.execute("""INSERT INTO bidders
-                        (bidder,company_name,street,postal_code,city,country,website,comment,active,created_at,updated_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(bidder) DO UPDATE SET
-                        company_name=excluded.company_name,street=excluded.street,
-                        postal_code=excluded.postal_code,city=excluded.city,country=excluded.country,
-                        website=excluded.website,comment=excluded.comment,active=excluded.active,updated_at=excluded.updated_at""",
-                        (*item,now_iso(),now_iso()))
-                audit_event(conn,current,"import" if len(normalized)>1 else "create","bidder","batch",
-                    f"{len(normalized)} Bieter gespeichert")
-            return json_response(self,201,{"ok":True,"saved":len(normalized)})
 
-        if p == "/api/bid/categories":
-            current=self.require_auth(permission="bid_answers_manage")
-            if not current:return
-            name=str(data.get("name","")).strip()
-            if not name:return json_response(self,400,{"error":"Ein Kategoriename ist erforderlich."})
-            try:
-                with db() as conn:
-                    order=conn.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM bid_question_categories").fetchone()[0]
-                    cur=conn.execute("""INSERT INTO bid_question_categories(name,active,sort_order,created_at)
-                        VALUES (?,?,?,?)""",(name,1 if data.get("active",True) else 0,order,now_iso()))
-                    audit_event(conn,current,"create","bid-category",cur.lastrowid,f"Bieterfragen-Kategorie {name} angelegt")
-            except sqlite3.IntegrityError:
-                return json_response(self,409,{"error":"Diese Kategorie existiert bereits."})
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
-        if p == "/api/bid/topics":
-            current=self.require_auth(permission="bid_answers_manage")
-            if not current:return
-            name=str(data.get("name","")).strip()
-            try:category_id=int(data.get("category_id",0))
-            except (TypeError,ValueError):category_id=0
-            if not name or not category_id:return json_response(self,400,{"error":"Kategorie und Thema sind erforderlich."})
-            try:
-                with db() as conn:
-                    if not conn.execute("SELECT 1 FROM bid_question_categories WHERE id=?",(category_id,)).fetchone():
-                        return json_response(self,400,{"error":"Die Kategorie wurde nicht gefunden."})
-                    order=conn.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM bid_question_topics WHERE category_id=?",(category_id,)).fetchone()[0]
-                    cur=conn.execute("""INSERT INTO bid_question_topics(category_id,name,active,sort_order,created_at)
-                        VALUES (?,?,?,?,?)""",(category_id,name,1 if data.get("active",True) else 0,order,now_iso()))
-                    audit_event(conn,current,"create","bid-topic",cur.lastrowid,f"Bieterfragen-Thema {name} angelegt")
-            except sqlite3.IntegrityError:
-                return json_response(self,409,{"error":"Dieses Thema existiert in der Kategorie bereits."})
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
-        if p == "/api/bid/answers":
-            current=self.require_auth(permission="bid_answers_manage")
-            if not current:return
-            try:topic_id=int(data.get("topic_id",0))
-            except (TypeError,ValueError):topic_id=0
-            short_question=str(data.get("short_question","")).strip()
-            question=str(data.get("question","")).strip()
-            agency_comment=str(data.get("agency_comment","")).strip()
-            variants=data.get("variants",[])
-            if not isinstance(variants,list):variants=[]
-            if not variants and str(data.get("answer","")).strip():
-                variants=[{"decision":str(data.get("decision","zugelassen")).strip().lower() or "zugelassen",
-                           "answer":str(data.get("answer","")).strip()}]
-            normalized_variants=[]
-            for index,variant in enumerate(variants):
-                if not isinstance(variant,dict):continue
-                decision=str(variant.get("decision","")).strip().lower()
-                answer=str(variant.get("answer","")).strip()
-                if decision not in {"zugelassen","abgelehnt"} or not answer:
-                    return json_response(self,400,{"error":"Jede Antwortvariante benötigt eine Entscheidung und einen Antworttext."})
-                normalized_variants.append((decision,str(variant.get("short_description","")).strip()[:300],answer,index))
-            if not topic_id or not short_question or not normalized_variants:
-                return json_response(self,400,{"error":"Thema, Kurzform der Frage und mindestens eine Antwortvariante sind erforderlich."})
-            with db() as conn:
-                if not conn.execute("SELECT 1 FROM bid_question_topics WHERE id=?",(topic_id,)).fetchone():
-                    return json_response(self,400,{"error":"Das Thema wurde nicht gefunden."})
-                cur=conn.execute("""INSERT INTO standard_bid_answers
-                    (topic_id,short_question,question,answer,agency_comment,created_at,updated_at)
-                    VALUES (?,?,?,?,?,?,?)""",
-                    (topic_id,short_question,question,normalized_variants[0][2],agency_comment,now_iso(),now_iso()))
-                for decision,short_description,answer,order in normalized_variants:
-                    conn.execute("""INSERT INTO standard_bid_answer_variants
-                        (standard_answer_id,decision,short_description,answer,sort_order,created_at,updated_at)
-                        VALUES (?,?,?,?,?,?,?)""",(cur.lastrowid,decision,short_description,answer,order,now_iso(),now_iso()))
-                audit_event(conn,current,"create","bid-answer",cur.lastrowid,f"Standardantwort {short_question} angelegt")
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
-        if p == "/api/bid/questions":
-            current=self.require_auth(permission="bid_questions_manage")
-            if not current:return
-            items=data.get("questions",[data])
-            if not isinstance(items,list) or not items or len(items)>500:
-                return json_response(self,400,{"error":"Bitte zwischen 1 und 500 Bieterfragen übergeben."})
-            normalized=[]
-            for item in items:
-                if not isinstance(item,dict):return json_response(self,400,{"error":"Eine Bieterfrage ist ungültig."})
-                try:project_id=int(item.get("project_id",0))
-                except (TypeError,ValueError):project_id=0
-                try:question_year=int(item.get("question_year",VERSION_YEAR))
-                except (TypeError,ValueError):question_year=VERSION_YEAR
-                if question_year<2000 or question_year>2100:return json_response(self,400,{"error":"Das Jahr muss zwischen 2000 und 2100 liegen."})
-                question=str(item.get("question","")).strip()
-                if not project_id or not question:
-                    return json_response(self,400,{"error":"Jede Bieterfrage benötigt ein Projekt und einen Fragetext."})
-                try: category_id=int(item.get("category_id",0)) or None
-                except (TypeError,ValueError): category_id=None
-                try: topic_id=int(item.get("topic_id",0)) or None
-                except (TypeError,ValueError): topic_id=None
-                decision=str(item.get("decision","")).strip().lower()
-                if decision not in {"","zugelassen","abgelehnt"}:
-                    return json_response(self,400,{"error":"Die Entscheidung muss zugelassen oder abgelehnt sein."})
-                try:bidder_id=int(item.get("bidder_id",0)) or None
-                except (TypeError,ValueError):bidder_id=None
-                try:standard_answer_id=int(item.get("standard_answer_id",0)) or None
-                except (TypeError,ValueError):standard_answer_id=None
-                try:standard_variant_id=int(item.get("standard_variant_id",0)) or None
-                except (TypeError,ValueError):standard_variant_id=None
-                normalized.append((project_id,str(item.get("category","")).strip()[:300],
-                    str(item.get("bidder","")).strip()[:500],str(item.get("subject","")).strip()[:500],
-                    question,str(item.get("agency_comment","")).strip(),decision,
-                    str(item.get("answer","")).strip(),category_id,topic_id,bidder_id,
-                    standard_answer_id,standard_variant_id,question_year))
-            with db() as conn:
-                project_ids={row[0] for row in conn.execute("SELECT id FROM projects WHERE archived=0").fetchall()}
-                if any(item[0] not in project_ids for item in normalized):
-                    return json_response(self,400,{"error":"Mindestens ein Projekt wurde nicht gefunden oder ist archiviert."})
-                ids=[]
-                for item in normalized:
-                    category_id,topic_id=item[8],item[9]
-                    if topic_id:
-                        topic=conn.execute("""SELECT t.id,t.name,t.category_id,c.name AS category_name
-                            FROM bid_question_topics t JOIN bid_question_categories c ON c.id=t.category_id
-                            WHERE t.id=?""",(topic_id,)).fetchone()
-                        if not topic:return json_response(self,400,{"error":"Mindestens ein Thema wurde nicht gefunden."})
-                        if category_id and category_id!=topic["category_id"]:
-                            return json_response(self,400,{"error":"Thema und Fragenkategorie passen nicht zusammen."})
-                        category_id=topic["category_id"]
-                        item=list(item);item[1]=topic["category_name"];item[3]=topic["name"];item[8]=category_id;item=tuple(item)
-                    elif category_id:
-                        category=conn.execute("SELECT name FROM bid_question_categories WHERE id=?",(category_id,)).fetchone()
-                        if not category:return json_response(self,400,{"error":"Mindestens eine Fragenkategorie wurde nicht gefunden."})
-                        item=list(item);item[1]=category["name"];item=tuple(item)
-                    bidder_id,standard_answer_id,standard_variant_id=item[10],item[11],item[12]
-                    if bidder_id:
-                        bidder=conn.execute("SELECT bidder FROM bidders WHERE id=? AND active=1",(bidder_id,)).fetchone()
-                        if not bidder:return json_response(self,400,{"error":"Mindestens ein Bieter wurde nicht gefunden."})
-                        item=list(item);item[2]=bidder["bidder"];item=tuple(item)
-                    if standard_variant_id:
-                        variant=conn.execute("""SELECT v.id,v.standard_answer_id,v.decision
-                            FROM standard_bid_answer_variants v WHERE v.id=?""",(standard_variant_id,)).fetchone()
-                        if not variant or (standard_answer_id and variant["standard_answer_id"]!=standard_answer_id):
-                            return json_response(self,400,{"error":"Die gewählte Antwortvariante ist ungültig."})
-                        standard_answer_id=variant["standard_answer_id"]
-                        item=list(item);item[11]=standard_answer_id;item=tuple(item)
-                    cur=conn.execute("""INSERT INTO bid_questions
-                        (project_id,category,bidder,subject,question,agency_comment,decision,answer,
-                         category_id,topic_id,bidder_id,standard_answer_id,standard_variant_id,question_year,
-                         created_by,created_at,updated_at)
-                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(*item,current["id"],now_iso(),now_iso()))
-                    ids.append(cur.lastrowid)
-                audit_event(conn,current,"create","bid-question","batch",f"{len(ids)} Bieterfrage(n) erfasst")
-            return json_response(self,201,{"ok":True,"ids":ids,"created":len(ids)})
 
-        if p == "/api/variables":
-            if not self.require_auth(permission="variables_manage"): return
-            payload, error = valid_variable_payload(data)
-            if error: return json_response(self,400,{"error":error})
-            try:
-                with db() as conn:
-                    next_order = conn.execute(
-                        "SELECT COALESCE(MAX(sort_order),-1)+1 FROM variables"
-                    ).fetchone()[0]
-                    cur = conn.execute("""INSERT INTO variables
-                        (key,label,field_type,source,required,active,sort_order)
-                        VALUES (?,?,?,?,?,?,?)""",
-                        (payload["key"],payload["label"],payload["field_type"],
-                         payload["source"],payload["required"],payload["active"],next_order))
-            except sqlite3.IntegrityError:
-                return json_response(self,409,{"error":"Dieser Platzhalterschlüssel existiert bereits."})
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
-        m = re.fullmatch(r"/api/templates/(\d+)/duplicate", p)
-        if m:
-            current = self.require_auth(permission="templates_manage")
-            if not current: return
-            with db() as conn:
-                source=conn.execute("SELECT * FROM templates WHERE id=?",(int(m.group(1)),)).fetchone()
-                if not source:return json_response(self,404,{"error":"Vorlage wurde nicht gefunden."})
-                next_order=conn.execute("""SELECT COALESCE(MAX(sort_order),-1)+1 FROM templates
-                    WHERE category_id IS ?""",(source["category_id"],)).fetchone()[0]
-                cur=conn.execute("""INSERT INTO templates
-                    (name,category,subject,body,body_html,fields_json,active,created_at,updated_at,
-                     category_id,notice_text,notice_mode,notice_enabled,notice_html,notice_button_label,sort_order)
-                    VALUES (?,?,?,?,?,?,0,?,?,?,?,?,?,?,?,?)""",
-                    ("Kopie von "+source["name"],source["category"],source["subject"],source["body"],
-                     source["body_html"],source["fields_json"],now_iso(),now_iso(),source["category_id"],
-                     source["notice_text"],source["notice_mode"],source["notice_enabled"],
-                     source["notice_html"],source["notice_button_label"],next_order))
-                save_template_version(conn,cur.lastrowid,current["id"])
-                audit_event(conn,current,"duplicate","template",cur.lastrowid,"Vorlage dupliziert")
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
-        if p == "/api/favorites":
-            current=self.require_auth(permission="email_create")
-            if not current:return
-            try:template_id=int(data.get("template_id",0))
-            except (TypeError,ValueError):template_id=0
-            with db() as conn:
-                accessible_ids={row["id"] for row in accessible_template_rows(conn,current)}
-                if template_id not in accessible_ids:
-                    return json_response(self,404,{"error":"Vorlage wurde nicht gefunden oder ist nicht freigegeben."})
-                conn.execute("INSERT OR IGNORE INTO favorite_templates(user_id,template_id,created_at) VALUES (?,?,?)",
-                             (current["id"],template_id,now_iso()))
-            return json_response(self,201,{"ok":True})
 
-        if p == "/api/templates":
-            current = self.require_auth(permission="templates_manage")
-            if not current: return
-            name = str(data.get("name","")).strip()
-            subject = str(data.get("subject","")).strip()
-            submitted_body = str(data.get("body","")).strip()
-            try: body_html = sanitize_email_html(data.get("body_html",""), submitted_body)
-            except ValueError as error: return json_response(self,400,{"error":str(error)})
-            body = html_to_plain_text(body_html)
-            try: category_id = int(data.get("category_id",0))
-            except (TypeError,ValueError): category_id = 0
-            with db() as conn:
-                category_row = conn.execute("SELECT * FROM categories WHERE id=?",(category_id,)).fetchone()
-            category = category_row["name"] if category_row else ""
-            fields, fields_error = normalize_template_fields(data.get("fields",[]))
-            notice_text = str(data.get("notice_text","")).strip()
-            notice_mode = str(data.get("notice_mode","display"))
-            notice_enabled = 1 if data.get("notice_enabled") else 0
-            submitted_notice = str(data.get("notice_text","")).strip()
-            try: notice_html = sanitize_email_html(data.get("notice_html",""),submitted_notice)
-            except ValueError as error: return json_response(self,400,{"error":str(error)})
-            notice_text = html_to_plain_text(notice_html)
-            notice_button_label = str(data.get("notice_button_label","Hinweistext gesehen")).strip() or "Hinweistext gesehen"
-            if fields_error: return json_response(self,400,{"error":fields_error})
-            if notice_mode not in NOTICE_MODES:
-                return json_response(self,400,{"error":"Die Hinweisbehandlung ist ungültig."})
-            if not name or not subject or not body or not category_row:
-                return json_response(self,400,{"error":"Name, Kategorie, Betreff und Text sind erforderlich."})
-            with db() as conn:
-                next_order=conn.execute("""SELECT COALESCE(MAX(sort_order),-1)+1 FROM templates
-                    WHERE category_id=?""",(category_id,)).fetchone()[0]
-                cur = conn.execute("""INSERT INTO templates
-                    (name,category,subject,body,body_html,fields_json,active,created_at,updated_at,notice_text,notice_mode,notice_enabled,notice_html,notice_button_label,category_id,sort_order)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (name,category,subject,body,body_html,json.dumps(fields,ensure_ascii=False),
-                     1 if data.get("active",True) else 0,now_iso(),now_iso(),notice_text,notice_mode,notice_enabled,
-                     notice_html,notice_button_label,category_id,next_order))
-                sync_custom_variables(conn,fields)
-                save_template_version(conn,cur.lastrowid,current["id"])
-                audit_event(conn,current,"create","template",cur.lastrowid,f"Vorlage {name} angelegt")
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
-        if p == "/api/categories":
-            if not self.require_auth(permission="categories_manage"): return
-            name = str(data.get("name","")).strip()
-            if not name: return json_response(self,400,{"error":"Ein Kategoriename ist erforderlich."})
-            try:
-                with db() as conn:
-                    order = conn.execute("SELECT COALESCE(MAX(sort_order),-1)+1 FROM categories").fetchone()[0]
-                    cur = conn.execute("""INSERT INTO categories(name,active,sort_order,created_at)
-                        VALUES (?,?,?,?)""",(name,1 if data.get("active",True) else 0,order,now_iso()))
-            except sqlite3.IntegrityError:
-                return json_response(self,409,{"error":"Diese Kategorie existiert bereits."})
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
-        if p == "/api/dashboard":
-            current = self.require_auth(permission="email_create")
-            if not current: return
-            try: category_id = int(data.get("category_id",0))
-            except (TypeError,ValueError): category_id = 0
-            with db() as conn:
-                allowed_ids = {row["id"] for row in accessible_category_rows(conn,current)}
-                if category_id not in allowed_ids:
-                    return json_response(self,403,{"error":"Auf diese Kategorie besteht kein Zugriff."})
-                order = conn.execute("""SELECT COALESCE(MAX(sort_order),-1)+1 FROM dashboard_tiles
-                    WHERE user_id=?""",(current["id"],)).fetchone()[0]
-                try:
-                    cur = conn.execute("""INSERT INTO dashboard_tiles(user_id,category_id,sort_order)
-                        VALUES (?,?,?)""",(current["id"],category_id,order))
-                except sqlite3.IntegrityError:
-                    return json_response(self,409,{"error":"Diese Kategorie ist bereits als Kachel vorhanden."})
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
-        if p == "/api/dashboard/quicklinks":
-            current = self.require_auth(permission="email_create")
-            if not current: return
-            title = str(data.get("title","")).strip()
-            url = str(data.get("url","")).strip()
-            link_type = str(data.get("link_type","external")).strip()
-            target = str(data.get("target","")).strip()
-            parsed = urlparse(url)
-            if not title or len(title) > 100:
-                return json_response(self,400,{"error":"Bitte eine Bezeichnung mit höchstens 100 Zeichen eingeben."})
-            if link_type not in {"external","internal"}:
-                return json_response(self,400,{"error":"Ungültiger Quicklink-Typ."})
-            if link_type == "external" and (len(url) > 2000 or parsed.scheme not in {"http","https"} or not parsed.netloc):
-                return json_response(self,400,{"error":"Bitte eine vollständige HTTP- oder HTTPS-Adresse eingeben."})
-            if link_type == "internal" and target not in INTERNAL_QUICKLINK_TARGETS:
-                return json_response(self,400,{"error":"Bitte eine gültige interne Seite auswählen."})
-            if link_type == "internal": url = ""
-            else: target = ""
-            with db() as conn:
-                order = conn.execute("""SELECT COALESCE(MAX(sort_order),-1)+1 FROM dashboard_quicklinks
-                    WHERE user_id=?""",(current["id"],)).fetchone()[0]
-                cur = conn.execute("""INSERT INTO dashboard_quicklinks
-                    (user_id,title,url,link_type,target,sort_order,created_at) VALUES (?,?,?,?,?,?,?)""",
-                    (current["id"],title,url,link_type,target,order,now_iso()))
-                conn.execute("UPDATE users SET show_quicklinks=1 WHERE id=?",(current["id"],))
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
-        if p in {"/api/projects/delete-archived","/api/templates/delete-archived"}:
-            current = self.require_auth(permission="roles_manage")
-            if not current: return
-            try: entity_ids = sorted({int(value) for value in data.get("ids",[])})
-            except (TypeError,ValueError):
-                return json_response(self,400,{"error":"Ungültige Auswahl."})
-            if not entity_ids:
-                return json_response(self,400,{"error":"Bitte mindestens einen archivierten Eintrag auswählen."})
-            table = "projects" if p.startswith("/api/projects") else "templates"
-            entity_type = "project" if table == "projects" else "template"
-            placeholders = ",".join("?" for _ in entity_ids)
-            with db() as conn:
-                rows = conn.execute(f"SELECT id,archived FROM {table} WHERE id IN ({placeholders})",entity_ids).fetchall()
-                if len(rows) != len(entity_ids) or any(not row["archived"] for row in rows):
-                    return json_response(self,409,{"error":"Nur vollständig archivierte Einträge können endgültig gelöscht werden."})
-                for entity_id in entity_ids:
-                    audit_event(conn,current,"delete-permanent",entity_type,entity_id,"Archivierten Eintrag endgültig gelöscht")
-                conn.execute(f"DELETE FROM {table} WHERE id IN ({placeholders})",entity_ids)
-            return json_response(self,200,{"ok":True,"deleted":len(entity_ids)})
 
-        if p == "/api/roles":
-            current = self.require_auth(permission="roles_manage")
-            if not current: return
-            payload, error = valid_role_payload(data)
-            if error: return json_response(self,400,{"error":error})
-            try:
-                with db() as conn:
-                    cur = conn.execute("""INSERT INTO roles
-                        (name,permissions_json,all_templates,all_categories,is_system,created_at)
-                        VALUES (?,?,?,?,0,?)""",
-                        (payload["name"],json.dumps(payload["permissions"]),
-                         1,payload["all_categories"],now_iso()))
-                    save_role_categories(conn,cur.lastrowid,payload)
-                    audit_event(conn,current,"create","role",cur.lastrowid,f"Rolle {payload['name']} angelegt")
-            except sqlite3.IntegrityError:
-                return json_response(self,409,{"error":"Dieser Rollenname existiert bereits."})
-            return json_response(self,201,{"ok":True,"id":cur.lastrowid})
 
         self.send_error(404)
 
@@ -2656,642 +1779,64 @@ class Handler(BaseHTTPRequestHandler):
         try: data = read_json(self)
         except Exception as e: return json_response(self,400,{"error":str(e)})
 
-        m=re.fullmatch(r"/api/document-templates/(\d+)",p)
+        if projects_routes.put(self, p, data) is not False: return
+        if documents_routes.put(self, p, data) is not False: return
+        if bids_routes.put(self, p, data) is not False: return
+        if administration_routes.put(self, p, data) is not False: return
+        if mail_routes.put(self, p, data) is not False: return
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        m = re.fullmatch(r"/api/templates/(\d+)/restore",p)
         if m:
-            current=self.require_auth(permission="document_templates_manage")
-            if not current:return
-            with db() as conn:
-                row=conn.execute("SELECT * FROM document_templates WHERE id=?",(int(m.group(1)),)).fetchone()
-                if not row:return json_response(self,404,{"error":"Dokumentvorlage wurde nicht gefunden."})
-                raw=row["docx_blob"]; filename=row["original_filename"]; placeholders=json.loads(row["placeholder_keys_json"] or "[]")
-                if data.get("content_base64"):
-                    try: raw=base64.b64decode(str(data["content_base64"]).split(",")[-1],validate=True); placeholders=extract_docx_placeholders(raw)
-                    except Exception as error:return json_response(self,400,{"error":str(error)})
-                    filename=str(data.get("filename") or filename)
-                    if not filename.lower().endswith(".docx"):return json_response(self,400,{"error":"Bitte eine DOCX-Datei auswählen."})
-                name=str(data.get("name",row["name"])).strip()
-                if not name:return json_response(self,400,{"error":"Ein Vorlagenname ist erforderlich."})
-                conn.execute("UPDATE document_templates SET name=?,description=?,original_filename=?,docx_blob=?,placeholder_keys_json=?,active=?,updated_at=? WHERE id=?",
-                    (name,str(data.get("description",row["description"])),filename,raw,json.dumps(placeholders),1 if data.get("active",True) else 0,now_iso(),int(m.group(1))))
-                audit_event(conn,current,"update","document_template",m.group(1),name)
-                if data.get("content_base64"):save_document_version(conn,int(m.group(1)),current["id"])
-            return json_response(self,200,{"ok":True,"placeholders":placeholders})
-        m=re.fullmatch(r"/api/document-blocks/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="document_templates_manage")
-            if not current:return
-            key=str(data.get("key","")).strip(); name=str(data.get("name","")).strip()
-            if not re.fullmatch(r"[a-z][a-z0-9_]*",key) or not name:return json_response(self,400,{"error":"Schlüssel und Name sind erforderlich."})
-            try:
-                with db() as conn:
-                    cur=conn.execute("UPDATE document_text_blocks SET block_key=?,name=?,category=?,content=?,active=?,updated_at=? WHERE id=?",
-                        (key,name,str(data.get("category","")).strip(),str(data.get("content","")),1 if data.get("active",True) else 0,now_iso(),int(m.group(1))))
-                    if not cur.rowcount:return json_response(self,404,{"error":"Textbaustein wurde nicht gefunden."})
-                    audit_event(conn,current,"update","document_block",m.group(1),name)
-            except sqlite3.IntegrityError:return json_response(self,409,{"error":"Dieser Schlüssel ist bereits vorhanden."})
-            return json_response(self,200,{"ok":True})
-
-        m = re.fullmatch(r"/api/projects/(\d+)",p)
-        if m:
-            current = self.require_auth(permission="projects_manage")
-            if not current: return
-            payload = data.get("data")
-            if not isinstance(payload,dict):
-                return json_response(self,400,{"error":"Ungültige Projektdaten."})
-            try:
-                project_key = str(payload["projekt"]["id"]).strip()
-                name = str(payload["projekt"]["bezeichnung"]).strip()
-            except (KeyError,TypeError):
-                return json_response(self,400,{"error":"Projekt-ID und Projektbezeichnung fehlen."})
-            if not project_key or not name:
-                return json_response(self,400,{"error":"Projekt-ID und Projektbezeichnung dürfen nicht leer sein."})
-            project_id = int(m.group(1))
-            with db() as conn:
-                existing = conn.execute("SELECT id,project_key FROM projects WHERE id=?",(project_id,)).fetchone()
-                if not existing:
-                    return json_response(self,404,{"error":"Projekt wurde nicht gefunden."})
-                conflict = conn.execute("SELECT id FROM projects WHERE project_key=? AND id<>?",(project_key,project_id)).fetchone()
-                if conflict:
-                    return json_response(self,409,{"error":"Diese Projekt-ID ist bereits vergeben. Bitte wählen Sie eine andere Projekt-ID."})
-                conn.execute("""UPDATE projects SET project_key=?,name=?,data_json=?,imported_at=?,imported_by=?
-                    WHERE id=?""",(project_key,name,json.dumps(payload,ensure_ascii=False),now_iso(),current["id"],project_id))
-                audit_event(conn,current,"update","project",project_id,
-                            f"Projekt {existing['project_key']} als {project_key} aktualisiert")
-            return json_response(self,200,{"ok":True,"project_key":project_key})
-
-        m=re.fullmatch(r"/api/bid/categories/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="bid_answers_manage")
-            if not current:return
-            name=str(data.get("name","")).strip()
-            if not name:return json_response(self,400,{"error":"Ein Kategoriename ist erforderlich."})
-            try:
-                with db() as conn:
-                    cur=conn.execute("UPDATE bid_question_categories SET name=?,active=? WHERE id=?",
-                        (name,1 if data.get("active",True) else 0,int(m.group(1))))
-                    if not cur.rowcount:return json_response(self,404,{"error":"Kategorie wurde nicht gefunden."})
-                    audit_event(conn,current,"update","bid-category",m.group(1),f"Bieterfragen-Kategorie {name} geändert")
-            except sqlite3.IntegrityError:return json_response(self,409,{"error":"Diese Kategorie existiert bereits."})
-            return json_response(self,200,{"ok":True})
-
-        m=re.fullmatch(r"/api/bid/topics/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="bid_answers_manage")
-            if not current:return
-            name=str(data.get("name","")).strip()
-            try:category_id=int(data.get("category_id",0))
-            except (TypeError,ValueError):category_id=0
-            if not name or not category_id:return json_response(self,400,{"error":"Kategorie und Thema sind erforderlich."})
-            try:
-                with db() as conn:
-                    existing=conn.execute("SELECT category_id,sort_order FROM bid_question_topics WHERE id=?",(int(m.group(1)),)).fetchone()
-                    if not existing:return json_response(self,404,{"error":"Thema wurde nicht gefunden."})
-                    order=existing["sort_order"] if existing["category_id"]==category_id else conn.execute(
-                        "SELECT COALESCE(MAX(sort_order),-1)+1 FROM bid_question_topics WHERE category_id=?",(category_id,)).fetchone()[0]
-                    conn.execute("UPDATE bid_question_topics SET category_id=?,name=?,active=?,sort_order=? WHERE id=?",
-                        (category_id,name,1 if data.get("active",True) else 0,order,int(m.group(1))))
-                    audit_event(conn,current,"update","bid-topic",m.group(1),f"Bieterfragen-Thema {name} geändert")
-            except sqlite3.IntegrityError:return json_response(self,409,{"error":"Dieses Thema existiert in der Kategorie bereits."})
-            return json_response(self,200,{"ok":True})
-
-        m=re.fullmatch(r"/api/bid/answers/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="bid_answers_manage")
-            if not current:return
-            try:topic_id=int(data.get("topic_id",0))
-            except (TypeError,ValueError):topic_id=0
-            short_question=str(data.get("short_question","")).strip();question=str(data.get("question","")).strip()
-            agency_comment=str(data.get("agency_comment","")).strip();variants=data.get("variants",[])
-            if not isinstance(variants,list):variants=[]
-            if not variants and str(data.get("answer","")).strip():
-                variants=[{"decision":str(data.get("decision","zugelassen")).strip().lower() or "zugelassen",
-                           "answer":str(data.get("answer","")).strip()}]
-            normalized_variants=[]
-            for index,variant in enumerate(variants):
-                if not isinstance(variant,dict):continue
-                decision=str(variant.get("decision","")).strip().lower();answer=str(variant.get("answer","")).strip()
-                if decision not in {"zugelassen","abgelehnt"} or not answer:
-                    return json_response(self,400,{"error":"Jede Antwortvariante benötigt eine Entscheidung und einen Antworttext."})
-                normalized_variants.append((decision,str(variant.get("short_description","")).strip()[:300],answer,index))
-            if not topic_id or not short_question or not normalized_variants:
-                return json_response(self,400,{"error":"Thema, Kurzform und mindestens eine Antwortvariante sind erforderlich."})
-            with db() as conn:
-                answer_id=int(m.group(1))
-                cur=conn.execute("""UPDATE standard_bid_answers SET topic_id=?,short_question=?,question=?,answer=?,agency_comment=?,updated_at=? WHERE id=?""",
-                    (topic_id,short_question,question,normalized_variants[0][2],agency_comment,now_iso(),answer_id))
-                if not cur.rowcount:return json_response(self,404,{"error":"Standardantwort wurde nicht gefunden."})
-                conn.execute("DELETE FROM standard_bid_answer_variants WHERE standard_answer_id=?",(answer_id,))
-                for decision,short_description,answer,order in normalized_variants:
-                    conn.execute("""INSERT INTO standard_bid_answer_variants
-                        (standard_answer_id,decision,short_description,answer,sort_order,created_at,updated_at)
-                        VALUES (?,?,?,?,?,?,?)""",(answer_id,decision,short_description,answer,order,now_iso(),now_iso()))
-                audit_event(conn,current,"update","bid-answer",m.group(1),f"Standardantwort {short_question} geändert")
-            return json_response(self,200,{"ok":True})
-
-        m=re.fullmatch(r"/api/bidders/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="projects_manage")
-            if not current:return
-            bidder=str(data.get("bidder","")).strip()[:300]
-            if not bidder:return json_response(self,400,{"error":"Das Pflichtfeld Bieter darf nicht leer sein."})
-            fields=(bidder,str(data.get("company_name","")).strip()[:500],str(data.get("street","")).strip()[:500],
-                str(data.get("postal_code","")).strip()[:30],str(data.get("city","")).strip()[:300],
-                str(data.get("country","")).strip()[:200],str(data.get("website","")).strip()[:1000],str(data.get("comment","")).strip()[:10000],
-                1 if data.get("active",True) else 0,now_iso(),int(m.group(1)))
-            try:
-                with db() as conn:
-                    cur=conn.execute("""UPDATE bidders SET bidder=?,company_name=?,street=?,postal_code=?,city=?,country=?,website=?,comment=?,active=?,updated_at=? WHERE id=?""",fields)
-                    if not cur.rowcount:return json_response(self,404,{"error":"Bieter wurde nicht gefunden."})
-                    audit_event(conn,current,"update","bidder",m.group(1),f"Bieter {bidder} geändert")
-            except sqlite3.IntegrityError:return json_response(self,409,{"error":"Dieser Bieter existiert bereits."})
-            return json_response(self,200,{"ok":True})
-
-        m=re.fullmatch(r"/api/bid/questions/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="bid_questions_manage")
-            if not current:return
-            try:project_id=int(data.get("project_id",0))
-            except (TypeError,ValueError):project_id=0
-            try:question_year=int(data.get("question_year",VERSION_YEAR))
-            except (TypeError,ValueError):question_year=VERSION_YEAR
-            if question_year<2000 or question_year>2100:return json_response(self,400,{"error":"Das Jahr muss zwischen 2000 und 2100 liegen."})
-            question=str(data.get("question","")).strip()
-            if not project_id or not question:return json_response(self,400,{"error":"Projekt und Fragetext sind erforderlich."})
-            try:category_id=int(data.get("category_id",0)) or None
-            except (TypeError,ValueError):category_id=None
-            try:topic_id=int(data.get("topic_id",0)) or None
-            except (TypeError,ValueError):topic_id=None
-            decision=str(data.get("decision","")).strip().lower()
-            if decision not in {"","zugelassen","abgelehnt"}:return json_response(self,400,{"error":"Die Entscheidung muss zugelassen oder abgelehnt sein."})
-            with db() as conn:
-                existing=conn.execute("SELECT answer FROM bid_questions WHERE id=?",(int(m.group(1)),)).fetchone()
-                if not existing:return json_response(self,404,{"error":"Bieterfrage wurde nicht gefunden."})
-                category_name=str(data.get("category","")).strip()[:300];topic_name=str(data.get("subject","")).strip()[:500]
-                if topic_id:
-                    topic=conn.execute("""SELECT t.name,t.category_id,c.name AS category_name FROM bid_question_topics t
-                        JOIN bid_question_categories c ON c.id=t.category_id WHERE t.id=?""",(topic_id,)).fetchone()
-                    if not topic:return json_response(self,400,{"error":"Das Thema wurde nicht gefunden."})
-                    if category_id and category_id!=topic["category_id"]:return json_response(self,400,{"error":"Thema und Fragenkategorie passen nicht zusammen."})
-                    category_id=topic["category_id"];category_name=topic["category_name"];topic_name=topic["name"]
-                new_answer=str(data.get("answer","")).strip()
-                try:bidder_id=int(data.get("bidder_id",0)) or None
-                except (TypeError,ValueError):bidder_id=None
-                try:standard_answer_id=int(data.get("standard_answer_id",0)) or None
-                except (TypeError,ValueError):standard_answer_id=None
-                try:standard_variant_id=int(data.get("standard_variant_id",0)) or None
-                except (TypeError,ValueError):standard_variant_id=None
-                bidder_name=str(data.get("bidder","")).strip()[:500]
-                if bidder_id:
-                    bidder=conn.execute("SELECT bidder FROM bidders WHERE id=? AND active=1",(bidder_id,)).fetchone()
-                    if not bidder:return json_response(self,400,{"error":"Der Bieter wurde nicht gefunden."})
-                    bidder_name=bidder["bidder"]
-                if standard_variant_id:
-                    variant=conn.execute("SELECT standard_answer_id FROM standard_bid_answer_variants WHERE id=?",(standard_variant_id,)).fetchone()
-                    if not variant or (standard_answer_id and variant["standard_answer_id"]!=standard_answer_id):
-                        return json_response(self,400,{"error":"Die gewählte Antwortvariante ist ungültig."})
-                    standard_answer_id=variant["standard_answer_id"]
-                clear_ack=existing["answer"]!=new_answer
-                cur=conn.execute("""UPDATE bid_questions SET project_id=?,category=?,bidder=?,subject=?,question=?,agency_comment=?,decision=?,answer=?,category_id=?,topic_id=?,bidder_id=?,standard_answer_id=?,standard_variant_id=?,question_year=?,answered_at=CASE WHEN ? THEN NULL ELSE answered_at END,answered_by=CASE WHEN ? THEN NULL ELSE answered_by END,updated_at=? WHERE id=?""",
-                    (project_id,category_name,bidder_name,topic_name,question,
-                     str(data.get("agency_comment","")).strip(),decision,new_answer,category_id,topic_id,
-                     bidder_id,standard_answer_id,standard_variant_id,question_year,
-                     1 if clear_ack else 0,1 if clear_ack else 0,now_iso(),int(m.group(1))))
-                if not cur.rowcount:return json_response(self,404,{"error":"Bieterfrage wurde nicht gefunden."})
-                audit_event(conn,current,"update","bid-question",m.group(1),"Bieterfrage geändert")
-            return json_response(self,200,{"ok":True})
-
-        m=re.fullmatch(r"/api/bid/questions/(\d+)/acknowledge",p)
-        if m:
-            current=self.require_auth(permission="bid_questions_manage")
-            if not current:return
-            with db() as conn:
-                row=conn.execute("SELECT answer FROM bid_questions WHERE id=?",(int(m.group(1)),)).fetchone()
-                if not row:return json_response(self,404,{"error":"Bieterfrage wurde nicht gefunden."})
-                if not str(row["answer"] or "").strip():return json_response(self,409,{"error":"Vor der Quittierung muss eine Antwort erstellt werden."})
-                conn.execute("UPDATE bid_questions SET answered_at=?,answered_by=?,updated_at=? WHERE id=?",
-                    (now_iso(),current["id"],now_iso(),int(m.group(1))))
-                audit_event(conn,current,"acknowledge","bid-question",m.group(1),"Beantwortung quittiert")
-            return json_response(self,200,{"ok":True})
-
-        if p == "/api/bid/categories/order":
-            if not self.require_auth(permission="bid_answers_manage"):return
-            try:ids=[int(value) for value in data.get("ids",[])]
-            except (TypeError,ValueError):return json_response(self,400,{"error":"Ungültige Reihenfolge."})
-            with db() as conn:
-                existing={row[0] for row in conn.execute("SELECT id FROM bid_question_categories").fetchall()}
-                if set(ids)!=existing or len(ids)!=len(existing):return json_response(self,400,{"error":"Die Reihenfolge ist unvollständig."})
-                for order,item_id in enumerate(ids):conn.execute("UPDATE bid_question_categories SET sort_order=? WHERE id=?",(order,item_id))
-            return json_response(self,200,{"ok":True})
-
-        if p == "/api/bid/topics/order":
-            if not self.require_auth(permission="bid_answers_manage"):return
-            try:category_id=int(data.get("category_id",0));ids=[int(value) for value in data.get("ids",[])]
-            except (TypeError,ValueError):return json_response(self,400,{"error":"Ungültige Reihenfolge."})
-            with db() as conn:
-                existing={row[0] for row in conn.execute("SELECT id FROM bid_question_topics WHERE category_id=?",(category_id,)).fetchall()}
-                if set(ids)!=existing or len(ids)!=len(existing):return json_response(self,400,{"error":"Die Reihenfolge ist unvollständig."})
-                for order,item_id in enumerate(ids):conn.execute("UPDATE bid_question_topics SET sort_order=? WHERE id=? AND category_id=?",(order,item_id,category_id))
-            return json_response(self,200,{"ok":True})
-
-        if p == "/api/settings":
-            current = self.require_auth(permission="settings_manage")
-            if not current: return
-            app_name = str(data.get("app_name", "")).strip()
-            logo_data = str(data.get("logo_data", ""))
-            if not app_name:
-                return json_response(self,400,{"error":"Der Anwendungsname darf nicht leer sein."})
-            if logo_data and (
-                len(logo_data) > 1_500_000
-                or not re.match(r"^data:image/(png|jpeg|webp|gif);base64,", logo_data)
-            ):
-                return json_response(self,400,{"error":"Bitte ein PNG-, JPG-, WEBP- oder GIF-Logo bis ca. 1 MB verwenden."})
-            navigation_order = data.get("navigation_order",MAIN_NAV_KEYS)
-            if not isinstance(navigation_order,list) or set(navigation_order) != set(MAIN_NAV_KEYS) or len(navigation_order) != len(MAIN_NAV_KEYS):
-                return json_response(self,400,{"error":"Die Reihenfolge der Hauptnavigation ist unvollständig."})
-            with db() as conn:
-                conn.execute("""UPDATE app_settings SET app_name=?,logo_data=?,navigation_order_json=? WHERE id=1""",
-                             (app_name,logo_data,json.dumps(navigation_order)))
-                audit_event(conn,current,"update","settings","1","Anwendungsname, Logo oder Navigation geändert")
-            return json_response(self,200,{"ok":True,"settings":settings_dict(),"software":software_info_dict()})
-
-        m = re.fullmatch(r"/api/variables/(\d+)", p)
-        if m:
-            if not self.require_auth(permission="variables_manage"): return
-            payload, error = valid_variable_payload(data)
-            if error: return json_response(self,400,{"error":error})
-            try:
-                with db() as conn:
-                    conn.execute("""UPDATE variables
-                        SET key=?,label=?,field_type=?,source=?,required=?,active=?
-                        WHERE id=?""",
-                        (payload["key"],payload["label"],payload["field_type"],
-                         payload["source"],payload["required"],payload["active"],
-                         int(m.group(1))))
-            except sqlite3.IntegrityError:
-                return json_response(self,409,{"error":"Dieser Platzhalterschlüssel existiert bereits."})
-            return json_response(self,200,{"ok":True})
-
-        m = re.fullmatch(r"/api/users/(\d+)/password", p)
-        if m:
-            current = self.require_auth(permission="users_manage")
-            if not current: return
-            password = str(data.get("new_password", ""))
-            with db() as conn:
-                target = conn.execute("SELECT password_policy_exempt FROM users WHERE id=?",(int(m.group(1)),)).fetchone()
-                if not target: return json_response(self,404,{"error":"Benutzer wurde nicht gefunden."})
-                error = validate_user_password(password,bool(target["password_policy_exempt"]))
-                if error: return json_response(self,400,{"error":error})
-                conn.execute("UPDATE users SET password_hash=?,must_change=0 WHERE id=?",
-                             (ph.hash(password),int(m.group(1))))
-                audit_event(conn,current,"update","user",m.group(1),"Passwort durch Administration geändert")
-            return json_response(self,200,{"ok":True})
-
-        m = re.fullmatch(r"/api/users/(\d+)/recovery", p)
-        if m:
-            current = self.require_auth(permission="users_manage")
-            if not current: return
-            recovery = "-".join([secrets.token_hex(2).upper() for _ in range(4)])
-            with db() as conn:
-                conn.execute("UPDATE users SET recovery_hash=? WHERE id=?",
-                             (ph.hash(recovery),int(m.group(1))))
-                audit_event(conn,current,"update","user",m.group(1),"Wiederherstellungscode neu erzeugt")
-            return json_response(self,200,{"ok":True,"recovery_code":recovery})
-
-        m = re.fullmatch(r"/api/users/(\d+)/unlock", p)
-        if m:
-            if not self.require_auth(permission="users_manage"): return
-            with db() as conn:
-                conn.execute("UPDATE users SET failed_login_attempts=0,locked_until=NULL WHERE id=?",
-                             (int(m.group(1)),))
-            return json_response(self,200,{"ok":True})
-
-        m = re.fullmatch(r"/api/users/(\d+)", p)
-        if m:
-            current = self.require_auth(permission="users_manage")
-            if not current: return
-            uid = int(m.group(1))
-            allowed = {"first_name","last_name","email","active","password_policy_exempt"}
-            sets=[]; vals=[]
-            for k in allowed:
-                if k in data:
-                    v=data[k]
-                    if k in {"active","password_policy_exempt"}: v=1 if v else 0
-                    sets.append(f"{k}=?"); vals.append(v)
-            if "role_id" in data:
-                try: role_id = int(data["role_id"])
-                except (TypeError,ValueError): role_id = 0
-                with db() as conn:
-                    role_row = conn.execute("SELECT permissions_json FROM roles WHERE id=?",(role_id,)).fetchone()
-                if not role_row:
-                    return json_response(self,400,{"error":"Die ausgewählte Rolle existiert nicht."})
-                selected_permissions = set(json.loads(role_row["permissions_json"]))
-                if not selected_permissions.issubset(set(permissions_from_row(current))):
-                    return json_response(self,403,{"error":"Sie dürfen keine Rolle mit weitergehenden Berechtigungen zuweisen."})
-                legacy_role = "admin" if "roles_manage" in selected_permissions else "user"
-                sets.extend(["role_id=?","role=?"]); vals.extend([role_id,legacy_role])
-            if not sets: return json_response(self,400,{"error":"Keine Änderungen übergeben."})
-            vals.append(uid)
-            with db() as conn:
-                conn.execute(f"UPDATE users SET {','.join(sets)} WHERE id=?", vals)
-                audit_event(conn,current,"update","user",uid,"Benutzerkonto oder Rollenzuweisung geändert")
-            return json_response(self,200,{"ok":True})
-
-        m = re.fullmatch(r"/api/users/(\d+)/reset", p)
-        if m:
-            if not self.require_auth(permission="users_manage"): return
-            uid=int(m.group(1))
-            password=secrets.token_urlsafe(10)+"A1"
-            recovery="-".join([secrets.token_hex(2).upper() for _ in range(4)])
-            with db() as conn:
-                conn.execute("UPDATE users SET password_hash=?,recovery_hash=?,must_change=0 WHERE id=?",
-                             (ph.hash(password),ph.hash(recovery),uid))
-            return json_response(self,200,{"temporary_password":password,"recovery_code":recovery})
-
-        m = re.fullmatch(r"/api/templates/(\d+)", p)
-        if m:
+            entity_id = int(m.group(1))
             current = self.require_auth(permission="templates_manage")
             if not current: return
-            tid=int(m.group(1))
-            fields, fields_error=normalize_template_fields(data.get("fields",[]))
-            if fields_error:return json_response(self,400,{"error":fields_error})
-            notice_text=str(data.get("notice_text","")).strip()
-            notice_mode=str(data.get("notice_mode","display"))
-            notice_enabled=1 if data.get("notice_enabled") else 0
-            submitted_notice=str(data.get("notice_text","")).strip()
-            try: notice_html=sanitize_email_html(data.get("notice_html",""),submitted_notice)
-            except ValueError as error: return json_response(self,400,{"error":str(error)})
-            notice_text=html_to_plain_text(notice_html)
-            notice_button_label=str(data.get("notice_button_label","Hinweistext gesehen")).strip() or "Hinweistext gesehen"
-            if notice_mode not in NOTICE_MODES:
-                return json_response(self,400,{"error":"Die Hinweisbehandlung ist ungültig."})
-            try: category_id=int(data.get("category_id",0))
-            except (TypeError,ValueError): category_id=0
             with db() as conn:
-                category_row=conn.execute("SELECT * FROM categories WHERE id=?",(category_id,)).fetchone()
-                if not category_row: return json_response(self,400,{"error":"Die ausgewählte Kategorie existiert nicht."})
-                existing_template=conn.execute("SELECT category_id,sort_order FROM templates WHERE id=?",(tid,)).fetchone()
-                if not existing_template:return json_response(self,404,{"error":"Vorlage wurde nicht gefunden."})
-                sort_order=existing_template["sort_order"]
-                if existing_template["category_id"] != category_id:
-                    sort_order=conn.execute("""SELECT COALESCE(MAX(sort_order),-1)+1 FROM templates
-                        WHERE category_id=?""",(category_id,)).fetchone()[0]
-                submitted_body=str(data.get("body","")).strip()
-                try: body_html=sanitize_email_html(data.get("body_html",""),submitted_body)
-                except ValueError as error: return json_response(self,400,{"error":str(error)})
-                body=html_to_plain_text(body_html)
-                conn.execute("""UPDATE templates SET name=?,category=?,category_id=?,subject=?,body=?,body_html=?,fields_json=?,active=?,updated_at=?,notice_text=?,notice_mode=?,notice_enabled=?,notice_html=?,notice_button_label=?,sort_order=?
-                    WHERE id=?""",
-                    (str(data.get("name","")).strip(),category_row["name"],category_id,
-                     str(data.get("subject","")).strip(),body,body_html,json.dumps(fields,ensure_ascii=False),
-                     1 if data.get("active",True) else 0,
-                     now_iso(),notice_text,notice_mode,notice_enabled,notice_html,notice_button_label,sort_order,tid))
-                sync_custom_variables(conn,fields)
-                version_no = save_template_version(conn,tid,current["id"])
-                audit_event(conn,current,"update","template",tid,f"Vorlage gespeichert (Version {version_no})")
-            return json_response(self,200,{"ok":True})
-
-        m = re.fullmatch(r"/api/(projects|templates)/(\d+)/restore",p)
-        if m:
-            entity,entity_id = m.group(1),int(m.group(2))
-            permission = "projects_manage" if entity == "projects" else "templates_manage"
-            current = self.require_auth(permission=permission)
-            if not current: return
-            table = "projects" if entity == "projects" else "templates"
-            entity_type = "project" if entity == "projects" else "template"
-            with db() as conn:
-                cur = conn.execute(f"UPDATE {table} SET archived=0 WHERE id=?",(entity_id,))
+                cur = conn.execute("UPDATE templates SET archived=0 WHERE id=?",(entity_id,))
                 if not cur.rowcount: return json_response(self,404,{"error":"Eintrag wurde nicht gefunden."})
-                if table == "templates": save_template_version(conn,entity_id,current["id"])
-                audit_event(conn,current,"restore",entity_type,entity_id,"Aus Archiv wiederhergestellt")
+                save_template_version(conn,entity_id,current["id"])
+                audit_event(conn,current,"restore","template",entity_id,"Aus Archiv wiederhergestellt")
             return json_response(self,200,{"ok":True})
 
-        if p == "/api/templates/order":
-            if not self.require_auth(permission="templates_manage"): return
-            try:
-                category_id=int(data.get("category_id",0))
-                template_ids=[int(value) for value in data.get("template_ids",[])]
-            except (TypeError,ValueError):
-                return json_response(self,400,{"error":"Ungültige Vorlagenreihenfolge."})
-            with db() as conn:
-                existing=[row[0] for row in conn.execute(
-                    "SELECT id FROM templates WHERE category_id=?",(category_id,)).fetchall()]
-                if set(template_ids)!=set(existing) or len(template_ids)!=len(existing):
-                    return json_response(self,400,{"error":"Die Vorlagenreihenfolge ist unvollständig."})
-                for position,template_id in enumerate(template_ids):
-                    conn.execute("UPDATE templates SET sort_order=? WHERE id=? AND category_id=?",
-                                 (position,template_id,category_id))
-            return json_response(self,200,{"ok":True})
 
-        m = re.fullmatch(r"/api/categories/(\d+)", p)
-        if m:
-            if not self.require_auth(permission="categories_manage"): return
-            category_id=int(m.group(1));name=str(data.get("name","")).strip()
-            if not name:return json_response(self,400,{"error":"Ein Kategoriename ist erforderlich."})
-            try:
-                with db() as conn:
-                    conn.execute("UPDATE categories SET name=?,active=? WHERE id=?",
-                                 (name,1 if data.get("active",True) else 0,category_id))
-                    conn.execute("UPDATE templates SET category=? WHERE category_id=?",(name,category_id))
-            except sqlite3.IntegrityError:
-                return json_response(self,409,{"error":"Diese Kategorie existiert bereits."})
-            return json_response(self,200,{"ok":True})
 
-        if p == "/api/categories/order":
-            if not self.require_auth(permission="categories_manage"): return
-            try: category_ids=[int(value) for value in data.get("category_ids",[])]
-            except (TypeError,ValueError):
-                return json_response(self,400,{"error":"Ungültige Kategorienreihenfolge."})
-            with db() as conn:
-                existing={row[0] for row in conn.execute("SELECT id FROM categories").fetchall()}
-                if set(category_ids)!=existing or len(category_ids)!=len(existing):
-                    return json_response(self,400,{"error":"Die Kategorienreihenfolge ist unvollständig."})
-                for order,category_id in enumerate(category_ids):
-                    conn.execute("UPDATE categories SET sort_order=? WHERE id=?",(order,category_id))
-            return json_response(self,200,{"ok":True})
 
-        if p == "/api/dashboard/order":
-            current=self.require_auth(permission="email_create")
-            if not current:return
-            try:tile_ids=[int(value) for value in data.get("tile_ids",[])]
-            except (TypeError,ValueError):return json_response(self,400,{"error":"Ungültige Reihenfolge."})
-            with db() as conn:
-                owned={row[0] for row in conn.execute("SELECT id FROM dashboard_tiles WHERE user_id=?",(current["id"],)).fetchall()}
-                if set(tile_ids)!=owned:return json_response(self,400,{"error":"Die Kachelreihenfolge ist unvollständig."})
-                for order,tile_id in enumerate(tile_ids):
-                    conn.execute("UPDATE dashboard_tiles SET sort_order=? WHERE id=? AND user_id=?",
-                                 (order,tile_id,current["id"]))
-            return json_response(self,200,{"ok":True})
 
-        if p == "/api/dashboard/favorites":
-            current=self.require_auth(permission="email_create")
-            if not current:return
-            with db() as conn:
-                conn.execute("UPDATE users SET show_favorites=? WHERE id=?",
-                             (1 if data.get("visible") else 0,current["id"]))
-            return json_response(self,200,{"ok":True})
 
-        if p == "/api/dashboard/quicklinks/visibility":
-            current=self.require_auth(permission="email_create")
-            if not current:return
-            with db() as conn:
-                conn.execute("UPDATE users SET show_quicklinks=? WHERE id=?",
-                             (1 if data.get("visible") else 0,current["id"]))
-            return json_response(self,200,{"ok":True})
 
-        if p == "/api/dashboard/quicklinks/order":
-            current=self.require_auth(permission="email_create")
-            if not current:return
-            try:link_ids=[int(value) for value in data.get("link_ids",[])]
-            except (TypeError,ValueError):return json_response(self,400,{"error":"Ungültige Quicklink-Reihenfolge."})
-            with db() as conn:
-                owned={row[0] for row in conn.execute("SELECT id FROM dashboard_quicklinks WHERE user_id=?",(current["id"],)).fetchall()}
-                if set(link_ids)!=owned or len(link_ids)!=len(owned):
-                    return json_response(self,400,{"error":"Die Quicklink-Reihenfolge ist unvollständig."})
-                for order,link_id in enumerate(link_ids):
-                    conn.execute("UPDATE dashboard_quicklinks SET sort_order=? WHERE id=? AND user_id=?",(order,link_id,current["id"]))
-            return json_response(self,200,{"ok":True})
 
-        m = re.fullmatch(r"/api/roles/(\d+)", p)
-        if m:
-            current = self.require_auth(permission="roles_manage")
-            if not current: return
-            role_id = int(m.group(1))
-            payload, error = valid_role_payload(data)
-            if error: return json_response(self,400,{"error":error})
-            with db() as conn:
-                existing = conn.execute("SELECT * FROM roles WHERE id=?",(role_id,)).fetchone()
-                if not existing: return json_response(self,404,{"error":"Rolle nicht gefunden."})
-                if existing["name"] == "Administrator":
-                    return json_response(self,409,{"error":"Die Administratorrolle ist fest geschützt und kann nicht bearbeitet werden."})
-                try:
-                    conn.execute("""UPDATE roles SET name=?,permissions_json=?,all_templates=?,all_categories=?
-                        WHERE id=?""",(payload["name"],json.dumps(payload["permissions"]),
-                                     1,payload["all_categories"],role_id))
-                    save_role_categories(conn,role_id,payload)
-                    audit_event(conn,current,"update","role",role_id,f"Rolle {payload['name']} geändert")
-                except sqlite3.IntegrityError:
-                    return json_response(self,409,{"error":"Dieser Rollenname existiert bereits."})
-            return json_response(self,200,{"ok":True})
         self.send_error(404)
 
     def do_DELETE(self):
         p=urlparse(self.path).path
-        # Document assets are stored in SQLite, so deletion remains part of normal backups.
-        m=re.fullmatch(r"/api/document-templates/(\d+)",p)
-        if m:
-            if not csrf_valid(self):return json_response(self,403,{"error":"Sicherheitsprüfung fehlgeschlagen."})
-            current=self.require_auth(permission="document_templates_manage")
-            if not current:return
-            with db() as conn:
-                cur=conn.execute("DELETE FROM document_templates WHERE id=?",(int(m.group(1)),))
-                if not cur.rowcount:return json_response(self,404,{"error":"Dokumentvorlage wurde nicht gefunden."})
-                audit_event(conn,current,"delete-permanent","document_template",m.group(1),"Dokumentvorlage gelöscht")
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/document-blocks/(\d+)",p)
-        if m:
-            if not csrf_valid(self):return json_response(self,403,{"error":"Sicherheitsprüfung fehlgeschlagen."})
-            current=self.require_auth(permission="document_templates_manage")
-            if not current:return
-            with db() as conn:
-                cur=conn.execute("DELETE FROM document_text_blocks WHERE id=?",(int(m.group(1)),))
-                if not cur.rowcount:return json_response(self,404,{"error":"Textbaustein wurde nicht gefunden."})
-                audit_event(conn,current,"delete-permanent","document_block",m.group(1),"Textbaustein gelöscht")
-            return json_response(self,200,{"ok":True})
         if p.startswith("/api/") and not csrf_valid(self):
             return json_response(self,403,{"error":"Sicherheitsprüfung fehlgeschlagen. Bitte die Seite neu laden."})
-        m=re.fullmatch(r"/api/bidders/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="projects_manage")
-            if not current:return
-            with db() as conn:
-                used=conn.execute("SELECT COUNT(*) FROM bid_questions WHERE bidder_id=?",(int(m.group(1)),)).fetchone()[0]
-                if used:return json_response(self,409,{"error":"Der Bieter wird bereits in Bieterfragen verwendet und kann nur deaktiviert werden."})
-                cur=conn.execute("DELETE FROM bidders WHERE id=?",(int(m.group(1)),))
-                if not cur.rowcount:return json_response(self,404,{"error":"Bieter wurde nicht gefunden."})
-                audit_event(conn,current,"delete-permanent","bidder",m.group(1),"Bieter gelöscht")
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/bid/questions/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="bid_questions_manage")
-            if not current:return
-            with db() as conn:
-                cur=conn.execute("DELETE FROM bid_questions WHERE id=?",(int(m.group(1)),))
-                if not cur.rowcount:return json_response(self,404,{"error":"Bieterfrage wurde nicht gefunden."})
-                audit_event(conn,current,"delete-permanent","bid-question",m.group(1),"Bieterfrage gelöscht")
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/bid/answers/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="bid_answers_manage")
-            if not current:return
-            with db() as conn:
-                cur=conn.execute("DELETE FROM standard_bid_answers WHERE id=?",(int(m.group(1)),))
-                if not cur.rowcount:return json_response(self,404,{"error":"Standardantwort wurde nicht gefunden."})
-                audit_event(conn,current,"delete-permanent","bid-answer",m.group(1),"Standardantwort gelöscht")
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/bid/topics/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="bid_answers_manage")
-            if not current:return
-            with db() as conn:
-                count=conn.execute("SELECT COUNT(*) FROM standard_bid_answers WHERE topic_id=?",(int(m.group(1)),)).fetchone()[0]
-                if count:return json_response(self,409,{"error":"Das Thema enthält noch Standardantworten."})
-                conn.execute("DELETE FROM bid_question_topics WHERE id=?",(int(m.group(1)),))
-                audit_event(conn,current,"delete-permanent","bid-topic",m.group(1),"Bieterfragen-Thema gelöscht")
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/bid/categories/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="bid_answers_manage")
-            if not current:return
-            with db() as conn:
-                count=conn.execute("SELECT COUNT(*) FROM bid_question_topics WHERE category_id=?",(int(m.group(1)),)).fetchone()[0]
-                if count:return json_response(self,409,{"error":"Die Kategorie enthält noch Themen."})
-                conn.execute("DELETE FROM bid_question_categories WHERE id=?",(int(m.group(1)),))
-                audit_event(conn,current,"delete-permanent","bid-category",m.group(1),"Bieterfragen-Kategorie gelöscht")
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/favorites/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="email_create")
-            if not current:return
-            with db() as conn:
-                conn.execute("DELETE FROM favorite_templates WHERE user_id=? AND template_id=?",
-                             (current["id"],int(m.group(1))))
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/variables/(\d+)",p)
-        if m:
-            if not self.require_auth(permission="variables_manage"): return
-            variable_id = int(m.group(1))
-            with db() as conn:
-                row = conn.execute("SELECT key FROM variables WHERE id=?",(variable_id,)).fetchone()
-                if not row: return json_response(self,404,{"error":"Platzhalter nicht gefunden."})
-                if row["key"] in {"projekt.id","projekt.bezeichnung"}:
-                    return json_response(self,409,{"error":"Projekt-ID und Projektbezeichnung sind technische Pflichtfelder und können nicht gelöscht werden."})
-                needle = "{{" + row["key"] + "}}"
-                used = conn.execute(
-                    "SELECT COUNT(*) FROM templates WHERE subject LIKE ? OR body LIKE ?",
-                    (f"%{needle}%",f"%{needle}%")
-                ).fetchone()[0]
-                if used:
-                    return json_response(self,409,{"error":"Der Platzhalter wird noch in einer Vorlage verwendet und kann nicht gelöscht werden."})
-                conn.execute("DELETE FROM variables WHERE id=?",(variable_id,))
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/projects/(\d+)",p)
-        if m:
-            current = self.require_auth(permission="projects_manage")
-            if not current: return
-            with db() as conn:
-                conn.execute("UPDATE projects SET archived=1 WHERE id=?",(int(m.group(1)),))
-                audit_event(conn,current,"archive","project",m.group(1),"Projekt archiviert")
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/templates/(\d+)",p)
-        if m:
-            current = self.require_auth(permission="templates_manage")
-            if not current:return
-            template_id=int(m.group(1))
-            with db() as conn:
-                conn.execute("UPDATE templates SET archived=1 WHERE id=?",(template_id,))
-                save_template_version(conn,template_id,current["id"])
-                audit_event(conn,current,"archive","template",template_id,"Vorlage archiviert")
-            return json_response(self,200,{"ok":True})
+        # Document assets are stored in SQLite, so deletion remains part of normal backups.
+        if documents_routes.delete(self, p, None) is not False: return
+        if bids_routes.delete(self, p, None) is not False: return
+        if mail_routes.delete(self, p, None) is not False: return
+        if re.fullmatch(r"/api/projects/\d+",p):
+            try: data = read_json(self)
+            except Exception as e: return json_response(self,400,{"error":str(e)})
+            return projects_routes.delete(self,p,data)
+        if administration_routes.delete(self, p, None) is not False: return
         m=re.fullmatch(r"/api/(projects|templates)/(\d+)/permanent",p)
         if m:
             current = self.require_auth(permission="roles_manage")
@@ -3306,47 +1851,6 @@ class Handler(BaseHTTPRequestHandler):
                             "Archivierter Eintrag endgültig gelöscht")
                 conn.execute(f"DELETE FROM {table} WHERE id=?",(entity_id,))
             return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/categories/(\d+)",p)
-        if m:
-            if not self.require_auth(permission="categories_manage"):return
-            category_id=int(m.group(1))
-            with db() as conn:
-                used=conn.execute("SELECT COUNT(*) FROM templates WHERE category_id=?",(category_id,)).fetchone()[0]
-                if used:return json_response(self,409,{"error":"Die Kategorie wird noch von E-Mail-Vorlagen verwendet."})
-                conn.execute("DELETE FROM categories WHERE id=?",(category_id,))
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/dashboard/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="email_create")
-            if not current:return
-            with db() as conn:
-                conn.execute("DELETE FROM dashboard_tiles WHERE id=? AND user_id=?",
-                             (int(m.group(1)),current["id"]))
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/dashboard/quicklinks/(\d+)",p)
-        if m:
-            current=self.require_auth(permission="email_create")
-            if not current:return
-            with db() as conn:
-                conn.execute("DELETE FROM dashboard_quicklinks WHERE id=? AND user_id=?",
-                             (int(m.group(1)),current["id"]))
-            return json_response(self,200,{"ok":True})
-        m=re.fullmatch(r"/api/roles/(\d+)",p)
-        if m:
-            current = self.require_auth(permission="roles_manage")
-            if not current: return
-            role_id = int(m.group(1))
-            with db() as conn:
-                role = conn.execute("SELECT * FROM roles WHERE id=?",(role_id,)).fetchone()
-                if not role: return json_response(self,404,{"error":"Rolle nicht gefunden."})
-                if role["is_system"]:
-                    return json_response(self,409,{"error":"Systemrollen können nicht gelöscht werden."})
-                assigned = conn.execute("SELECT COUNT(*) FROM users WHERE role_id=?",(role_id,)).fetchone()[0]
-                if assigned:
-                    return json_response(self,409,{"error":"Die Rolle ist noch Benutzern zugewiesen."})
-                audit_event(conn,current,"delete-permanent","role",role_id,f"Rolle {role['name']} gelöscht")
-                conn.execute("DELETE FROM roles WHERE id=?",(role_id,))
-            return json_response(self,200,{"ok":True})
         self.send_error(404)
 
 if __name__ == "__main__":
@@ -3356,8 +1860,13 @@ if __name__ == "__main__":
     actual_port = server.server_address[1]
     url = f"http://{HOST}:{actual_port}/"
     print(f"Wieseke Vorlagen-Engine v{SOFTWARE_VERSION} läuft unter {url}")
-    print("Standardzugang bei neuer Datenbank: admin / Admin12345!")
     print("Dieses Fenster muss geöffnet bleiben. Beenden mit Strg+C.")
     if OPEN_BROWSER:
         threading.Timer(1.0, lambda: webbrowser.open(url, new=1)).start()
-    server.serve_forever()
+    backup_stop = threading.Event()
+    threading.Thread(target=backup_worker,args=(backup_stop,),daemon=True).start()
+    try: server.serve_forever()
+    except KeyboardInterrupt: pass
+    finally:
+        backup_stop.set()
+        server.server_close()

@@ -1,0 +1,47 @@
+/** Single source for page names, access, areas and stable routes. No demo code. */
+export const areas={work:'Arbeiten',library:'Bibliotheken',admin:'Administration'};
+const p=(id,title,area,group,permissions=[],listed=true)=>({id,title,area,group,permissions,listed});
+export const pages=[
+ p('dashboard','Start','work','dashboard',['email_create']),
+ p('project-overview','Projektübersicht','work','projects',['projects_view']),
+ p('project-detail','Projekt','work','projects',['projects_view'],false),
+ p('project-edit','Projektdaten bearbeiten','work','projects',['projects_manage'],false),
+ p('project-create','Projekt anlegen','work','projects',['projects_manage'],false),
+ p('generator','E-Mail erstellen','work','email',['email_create']),
+ p('document-create','Dokument erstellen','work','documents',['documents_create']),
+ p('bid-questions','Bieterfragen','work','bidder',['bid_questions_view','bid_questions_manage']),
+ p('bid-question-create','Einzelerfassung','work','bidder',['bid_questions_manage'],false),
+ p('bid-question-detail','Bieterfrage','work','bidder',['bid_questions_view','bid_questions_manage'],false),
+ p('bid-question-batch','Batch-Erfassung','work','bidder',['bid_questions_manage']),
+ p('bid-question-import','Excel-Import','work','bidder',['bid_questions_manage']),
+ p('templates','E-Mail-Vorlagen','library','email',['templates_manage','templates_export_all']),
+ p('template-edit','E-Mail-Vorlage bearbeiten','library','email',['templates_manage'],false),
+ p('categories','Mailkategorien','library','email',['categories_manage']),
+ p('document-templates','Dokumentvorlagen','library','documents',['document_templates_manage']),
+ p('document-template-edit','Dokumentvorlage bearbeiten','library','documents',['document_templates_manage'],false),
+ p('document-blocks','Textbausteine','library','documents',['document_templates_manage']),
+ p('document-block-edit','Textbaustein bearbeiten','library','documents',['document_templates_manage'],false),
+ p('bid-answers','Standardantworten','library','bidder',['bid_questions_view','bid_questions_manage','bid_answers_manage']),
+ p('bid-answer-create','Standardantwort bearbeiten','library','bidder',['bid_answers_manage'],false),
+ p('bid-answer-detail','Standardantwort','library','bidder',['bid_questions_view','bid_questions_manage','bid_answers_manage'],false),
+ p('bid-taxonomy','Kategorien und Themen','library','bidder',['bid_answers_manage']),
+ p('bidders','Bieterverzeichnis','library','bidders',['projects_view']),
+ p('bidder-create','Bieter bearbeiten','library','bidders',['projects_manage'],false),
+ p('bidder-detail','Bieter','library','bidders',['projects_view'],false),
+ p('variables','Platzhalter','library','variables',['variables_manage']),
+ p('variable-edit','Platzhalter bearbeiten','library','variables',['variables_manage'],false),
+ p('users','Benutzer','admin','users',['users_manage']),
+ p('user-create','Benutzer anlegen','admin','users',['users_manage'],false),
+ p('roles','Rollen','admin','users',['roles_manage']),
+ p('role-edit','Rolle bearbeiten','admin','users',['roles_manage'],false),
+ p('system-status','Systemstatus','admin','system',['system_view']),
+ p('backups','Sicherungen','admin','system',['backup_manage']),
+ p('audit','Änderungsprotokoll','admin','system',['system_view']),
+ p('usage','Nutzungsauswertung','admin','system',['system_view']),
+ p('settings','Einstellungen','admin','footer',['settings_manage']),
+ p('help','Hilfe','work','footer'),p('account','Mein Konto','work','footer'),
+ p('excel-import','Projekt aus Excel','work','projects',['projects_manage'],false),
+];
+export const groups={dashboard:'Start',projects:'Projekte',email:'E-Mails',documents:'Dokumente',bidder:'Bieterfragen',bidders:'Bieter',variables:'Platzhalter',users:'Benutzerverwaltung',system:'System'};
+export function pageAllowed(page){return !!page&&(!page.permissions.length||page.permissions.some(permission=>window.hasPermission?.(permission)));}
+export function routeFor(id,record){return `/app/${id}${record?'/'+encodeURIComponent(record):''}`;}
